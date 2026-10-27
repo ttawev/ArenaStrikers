@@ -24,7 +24,7 @@ namespace Arena.Sim
                 ReleaseBall(p, 0.3f);
                 b.X = p.X + a.x * (R + BR + 2); b.Y = p.Y + a.y * (R + BR + 2);
                 b.Vx = a.x * pow + p.Vx * 0.25f; b.Vy = a.y * pow + p.Vy * 0.25f;
-                p.Flash = 0.15f;
+                p.Flash = 0.15f; Impact(b.X, b.Y, charge);
                 return true;
             }
             var toB = M.Norm(b.X - p.X, b.Y - p.Y);
@@ -33,7 +33,7 @@ namespace Arena.Sim
             var dir = M.Norm(aim.x * 0.65f + toB.x * 0.35f, aim.y * 0.65f + toB.y * 0.35f);
             b.Vx = dir.x * pow + p.Vx * 0.25f; b.Vy = dir.y * pow + p.Vy * 0.25f;
             b.X = p.X + toB.x * (R + BR + 1); b.Y = p.Y + toB.y * (R + BR + 1);
-            p.Flash = 0.15f;
+            p.Flash = 0.15f; Impact(b.X, b.Y, charge);
             return true;
         }
 
@@ -93,7 +93,7 @@ namespace Arena.Sim
             b.X = p.X + a.x * (R + BR + 2); b.Y = p.Y + a.y * (R + BR + 2);
             var v = LobVel(D - (R + BR + 2));
             b.Vx = a.x * v.vh; b.Vy = a.y * v.vh; b.Vz = v.vz; b.Z = 1;
-            Rumble(p, 0.25f);
+            Rumble(p, 0.25f); Impact(b.X, b.Y, 0.35f);
         }
         bool TryLob(SimPlayer p, float ax, float ay, float charge)
         {
@@ -227,7 +227,7 @@ namespace Arena.Sim
             if (b.Owner == p) ReleaseBall(p, 0.4f); else p.GrabCd = 0.4f;
             b.X = p.X + dx * (R + BR + 2); b.Y = p.Y + dy * (R + BR + 2);
             b.Vx = dx * T.firePow; b.Vy = dy * T.firePow; b.Fire = 1.8f; b.FireBy = p; b.Last = p; b.Spin = 0; b.FireGrace = 0.2f;
-            p.FireCd = T.fireCd; p.Flash = 0.2f; Shake(6); Rumble(p, 0.6f);
+            p.FireCd = T.fireCd; p.Flash = 0.2f; Shake(6); Rumble(p, 0.6f); Impact(b.X, b.Y, 1.2f);
             Burst(b.X, b.Y, FxColor.Fire, 16, 1.2f);
         }
 

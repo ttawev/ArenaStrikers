@@ -16,6 +16,11 @@ namespace Arena.Game
         [Range(8, 30)] public float cameraDistance = 15;
         [Range(20, 60)] public float cameraFov = 38;
 
+        [Header("Отклик удара")]
+        [Tooltip("Длительность заморозки кадра при сильном ударе, множитель")] [Range(0, 3)] public float hitstopScale = 1;
+        [Tooltip("Тряска камеры, множитель")] [Range(0, 3)] public float shakeScale = 1;
+        [Tooltip("Рывок камеры (приближение) при ударе, градусы")] [Range(0, 8)] public float fovKick = 3;
+
         enum State { Menu, Playing, Paused, Ended }
         State state = State.Menu;
         Match match;
@@ -36,7 +41,9 @@ namespace Arena.Game
         static readonly string[] ModeNames = { "1 на 1", "2 на 2", "4 на 4", "Тренировка" };
         static readonly string[] DiffNames = { "Лёгкий", "Средний", "Сложный" };
         int heroSel, modeSel = 2, diffSel = 1;
-        float denyFlash;
+        float denyFlash, hitstop, fovPunch;
+        AudioSource audioSrc;
+        AudioClip receiveClip;
 
         void Awake()
         {
@@ -47,6 +54,8 @@ namespace Arena.Game
             if (cam == null) { var go = new GameObject("Main Camera") { tag = "MainCamera" }; cam = go.AddComponent<Camera>(); go.AddComponent<AudioListener>(); }
             cam.clearFlags = CameraClearFlags.SolidColor; cam.backgroundColor = Mat.Night; cam.nearClipPlane = 0.1f; cam.farClipPlane = 120;
             view = new WorldView(transform);
+            audioSrc = gameObject.AddComponent<AudioSource>(); audioSrc.playOnAwake = false; audioSrc.spatialBlend = 0;
+            receiveClip = SoundFx.Receive();
             match = new Match(tuning, System.Environment.TickCount);
             match.Setup(ModeList[modeSel], HeroList[heroSel], diffSel); // something to look at behind the menu
             view.Rebuild(match);
@@ -70,7 +79,8 @@ namespace Arena.Game
             if (state == State.Playing)
             {
                 input.Poll(match.Local.Hero);
-                acc += dt;
+                if (hitstop > 0) hitstop -= dt; // freeze-frame on strong hits: the sim waits, input is kept
+                else acc += dt;
                 while (acc >= DT)
                 {
                     cmds[0] = input.Take(match.Local.Hero); lastCmd = cmds[0];
@@ -98,6 +108,17 @@ namespace Arena.Game
                     case FxKind.Goal: view.Burst(e.X, e.Y, e.Team == Team.Home ? Mat.Home : Mat.Away, 60, 1.6f); break;
                     case FxKind.Rumble: if (e.Player == match.Local) input.Rumble(e.Amount); break;
                     case FxKind.Denied: if (e.Player == match.Local) denyFlash = 0.25f; break;
+                    case FxKind.Impact:
+                        view.Impact(e.X, e.Y, e.Amount);
+                        if (e.Amount >= 0.5f) { hitstop = Mathf.Max(hitstop, (0.045f + 0.075f * Mathf.Min(e.Amount, 1.4f)) * hitstopScale); acc = 0; }
+                        shake = Mathf.Max(shake, e.Amount * 10 * shakeScale);
+                        fovPunch = Mathf.Max(fovPunch, Mathf.Clamp01(e.Amount) * fovKick);
+                        view.Burst(e.X, e.Y, Mat.Mist, (int)(6 + 10 * e.Amount), 0.6f + 0.6f * e.Amount);
+                        break;
+                    case FxKind.Receive:
+                        audioSrc.pitch = 0.92f + Random.value * 0.16f;
+                        audioSrc.PlayOneShot(receiveClip, e.Player == match.Local ? 0.9f : 0.45f);
+                        break;
                 }
             }
             match.Events.Clear();
@@ -156,9 +177,10 @@ namespace Arena.Game
         {
             var target = TargetCamPos(false);
             camPos = Vector3.Lerp(camPos, target, 1 - Mathf.Exp(-5 * dt));
-            cam.fieldOfView = cameraFov;
+            fovPunch = Mathf.Max(0, fovPunch - dt * 18);
+            cam.fieldOfView = cameraFov - fovPunch;
             cam.transform.rotation = Quaternion.Euler(cameraTilt, 0, 0);
-            Vector3 jitter = shake > 0 ? new Vector3(Random.value - 0.5f, 0, Random.value - 0.5f) * shake * 1.4f * W.S : Vector3.zero;
+            Vector3 jitter = shake > 0 ? new Vector3(Random.value - 0.5f, 0, Random.value - 0.5f) * shake * 4f * W.S : Vector3.zero;
             cam.transform.position = camPos + jitter;
             shake = Mathf.Max(0, shake - dt * 30);
         }
@@ -211,21 +233,77 @@ namespace Arena.Game
                 Color col = match.Banner == "" ? Mat.Chalk : match.BannerTeam == Team.Home ? Mat.Home : Mat.Away;
                 Shadowed(new Rect(0, h * 0.35f, w, 100), text, match.Banner != "" ? banner : big, col);
             }
-            // cooldowns of your hero, bottom left
+            ButtonsHud(w, h, training);
+        }
+
+        // ---------- action buttons, bottom right: laid out like the gamepad's face buttons ----------
+        static Texture2D disc, ringTex;
+        static Texture2D MakeCircle(bool ring)
+        {
+            const int N = 128; var t = new Texture2D(N, N, TextureFormat.RGBA32, false); var px = new Color32[N * N];
+            for (int y = 0; y < N; y++) for (int x = 0; x < N; x++)
+                {
+                    float d = Vector2.Distance(new Vector2(x + 0.5f, y + 0.5f), new Vector2(N / 2f, N / 2f));
+                    float a = Mathf.Clamp01(N / 2f - d);
+                    if (ring) a *= Mathf.Clamp01(d - (N / 2f - 7));
+                    px[y * N + x] = new Color32(255, 255, 255, (byte)(a * 255));
+                }
+            t.SetPixels32(px); t.Apply(); t.hideFlags = HideFlags.HideAndDontSave; return t;
+        }
+
+        void ActionButton(float cx, float cy, float size, string key, string label, float fill, Color col, bool active)
+        {
+            if (disc == null) disc = MakeCircle(false);
+            if (ringTex == null) ringTex = MakeCircle(true);
+            var r = new Rect(cx - size / 2, cy - size / 2, size, size);
+            fill = Mathf.Clamp01(fill);
+            bool ready = fill >= 1;
+            GUI.color = new Color(0.03f, 0.08f, 0.1f, 0.78f); GUI.DrawTexture(r, disc);
+            // fill rises from the bottom as the cooldown (or charge) completes
+            var fc = ready ? col : new Color(col.r * 0.55f, col.g * 0.55f, col.b * 0.55f, 0.9f);
+            GUI.color = fc;
+            float fh = size * fill;
+            GUI.BeginGroup(new Rect(r.x, r.y + size - fh, size, fh));
+            GUI.DrawTexture(new Rect(0, fh - size, size, size), disc);
+            GUI.EndGroup();
+            GUI.color = active ? Color.white : ready ? col : new Color(1, 1, 1, 0.25f); GUI.DrawTexture(r, ringTex);
+            GUI.color = Color.white;
+            var ls = new GUIStyle(small) { alignment = TextAnchor.MiddleCenter, fontSize = 13, fontStyle = FontStyle.Bold, wordWrap = false };
+            ls.normal.textColor = ready ? Mat.Night : Color.white;
+            GUI.Label(r, label, ls);
+            var ks = new GUIStyle(small) { alignment = TextAnchor.MiddleCenter, fontSize = 12, fontStyle = FontStyle.Bold };
+            GUI.color = new Color(0, 0, 0, 0.85f); GUI.DrawTexture(new Rect(cx - 12, r.y - 10, 24, 20), disc);
+            GUI.color = Color.white; GUI.Label(new Rect(cx - 12, r.y - 10, 24, 20), key, ks);
+        }
+
+        void ButtonsHud(float w, float h, bool training)
+        {
             var you = match.Local; var T = match.T;
-            float x = 24, y = h - 116;
-            Bar(ref y, x, "Рывок", 1 - you.DashCd / T.dashCd);
+            bool pad = input.UsingGamepad;
+            float size = Mathf.Clamp(h * 0.075f, 56, 84), gap = size * 1.05f;
+            float cx = w - gap * 1.7f - 20, cy = h - gap * 1.6f - 20;
+            Color heroCol = you.Hero == Hero.Fire ? Mat.Fire : you.Hero == Hero.Hook ? Mat.Hex("#e2c48a") : you.Hero == Hero.Teleport ? Mat.Blink : Mat.Spin;
+            if (denyFlash > 0) heroCol = Mat.Away;
+
+            // A — kick (fill = charge while held), X — lob, B — dash, Y — hero ability
+            ActionButton(cx, cy + gap, size, pad ? "A" : "J", "Удар", you.Charging ? you.Charge : (you.KickCd > 0 ? 0.6f : 1), Mat.Home, you.Charging);
+            ActionButton(cx - gap, cy, size, pad ? "X" : "L", "Навес", you.Lobbing ? you.LobCharge : 1, Mat.Hex("#c8ef7a"), you.Lobbing);
+            ActionButton(cx + gap, cy, size, pad ? "B" : "K", "Рывок", 1 - you.DashCd / T.dashCd, Mat.Chalk, you.DashT > 0);
             switch (you.Hero)
             {
-                case Hero.Fire: Bar(ref y, x, "Огонь", 1 - you.FireCd / T.fireCd); break;
-                case Hero.Hook: Bar(ref y, x, "Крюк", 1 - you.HookCd / T.hookCd); break;
-                case Hero.Teleport: Bar(ref y, x, you.TpBackT > 0 ? "Телепорт: НАЗАД!" : "Телепорт", you.TpBackT > 0 ? 1 : 1 - you.TpCd / T.tpCd); break;
-                case Hero.Curve: Bar(ref y, x, "Кручёный", 1 - you.CurveCd / T.curveCd); break;
+                case Hero.Fire: ActionButton(cx, cy - gap, size, pad ? "Y" : "U", you.FireT > 0 ? "Замах!" : "Огонь", you.FireT > 0 ? 1 : 1 - you.FireCd / T.fireCd, heroCol, you.FireT > 0); break;
+                case Hero.Hook: ActionButton(cx, cy - gap, size, pad ? "Y" : "U", "Крюк", 1 - you.HookCd / T.hookCd, heroCol, match.Hooks.Exists(k => k.Owner == you)); break;
+                case Hero.Teleport:
+                    ActionButton(cx, cy - gap, size, pad ? "Y" : "U", you.TpBackT > 0 ? "Назад!" : "Телепорт", you.TpBackT > 0 ? 1 : 1 - you.TpCd / T.tpCd, you.TpBackT > 0 ? Mat.Hex("#c9f3ff") : heroCol, you.TpBackT > 0); break;
+                case Hero.Curve:
+                    float cf = 1 - you.CurveCd / T.curveCd;
+                    ActionButton(cx - gap * 0.55f, cy - gap * 1.05f, size * 0.85f, pad ? "LB" : "U", "↶ Влево", you.Curving < 0 ? you.CurveCharge : cf, heroCol, you.Curving < 0);
+                    ActionButton(cx + gap * 0.55f, cy - gap * 1.05f, size * 0.85f, pad ? "RB" : "I", "Вправо ↷", you.Curving > 0 ? you.CurveCharge : cf, heroCol, you.Curving > 0);
+                    break;
             }
-            string keys = input.UsingGamepad
-                ? "A удар · X навес · B рывок · " + (you.Hero == Hero.Curve ? "LB/RB кручёный" : "Y способность") + (training ? " · Back мяч ко мне" : "") + " · Start пауза"
-                : "WASD бег · J удар · L навес · K рывок · " + (you.Hero == Hero.Curve ? "U/I кручёный" : "U способность") + (training ? " · R мяч ко мне" : "") + " · Esc пауза";
-            GUI.color = new Color(1, 1, 1, 0.6f); GUI.Label(new Rect(x, h - 34, w - 48, 24), keys, small); GUI.color = Color.white;
+            // small hint line, bottom left
+            string hint = (pad ? "Start — пауза" : "WASD — бег · Esc — пауза") + (training ? (pad ? " · Back — мяч ко мне" : " · R — мяч ко мне") : "");
+            GUI.color = new Color(1, 1, 1, 0.55f); GUI.Label(new Rect(24, h - 34, w * 0.5f, 24), hint, small); GUI.color = Color.white;
         }
 
         void Bar(ref float y, float x, string label, float k)

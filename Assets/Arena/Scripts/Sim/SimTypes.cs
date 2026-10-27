@@ -20,7 +20,7 @@ namespace Arena.Sim
         public bool Dash, Ability, BallToMe;
     }
 
-    public enum FxKind { Burst, Shake, Goal, Rumble, Denied }
+    public enum FxKind { Burst, Shake, Goal, Rumble, Denied, Impact, Receive }
     public enum FxColor { White, Mist, Fire, FireYellow, Blink, Home, Away, Spin, Dust }
 
     /// <summary>Something the view should show or play: particles, camera shake, gamepad rumble.</summary>

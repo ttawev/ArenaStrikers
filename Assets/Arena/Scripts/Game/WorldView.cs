@@ -19,6 +19,12 @@ namespace Arena.Game
         readonly Transform[] dots = new Transform[15];
         readonly (float x, float y)[] dotBuf = new (float x, float y)[15];
         GameObject halo;
+        Material haloMat;
+        float punch;
+        readonly Transform[] shocks = new Transform[4];
+        readonly Material[] shockMats = new Material[4];
+        readonly float[] shockLife = new float[4];
+        int shockNext;
 
         public WorldView(Transform parent)
         {
@@ -154,7 +160,14 @@ namespace Arena.Game
             trail = ball.gameObject.AddComponent<TrailRenderer>();
             trail.time = 0.12f; trail.startWidth = BR * 1.6f * S; trail.endWidth = 0; trail.minVertexDistance = 0.02f;
             trail.material = Mat.ParticleMat(true); trail.emitting = false;
-            halo = Shapes.Prim(PrimitiveType.Sphere, ball, Vector3.zero, Vector3.one * 1.8f, Mat.Clear(new Color(1, 0.42f, 0.06f, 0.5f), true), "FireHalo");
+            haloMat = Mat.Clear(new Color(1, 0.42f, 0.06f, 0.5f), true);
+            halo = Shapes.Prim(PrimitiveType.Sphere, ball, Vector3.zero, Vector3.one * 1.8f, haloMat, "Halo");
+            for (int i = 0; i < shocks.Length; i++)
+            {
+                shockMats[i] = Mat.Clear(new Color(1, 1, 1, 0), true);
+                shocks[i] = Shapes.MeshObj(Shapes.Ring(0.72f, 1f, 48), root, shockMats[i], "Shockwave").transform;
+                shocks[i].gameObject.SetActive(false);
+            }
             halo.SetActive(false);
             ballShadow = Shapes.MeshObj(Shapes.Disc(BR * S), root, Mat.Clear(new Color(0, 0, 0, 0.38f)), "BallShadow").transform;
             ownerRingMat = Mat.Clear(Color.white);
@@ -202,6 +215,20 @@ namespace Arena.Game
             }
         }
 
+        /// <summary>Strong touch on the ball: a shock ring on the grass and a punch of the ball's size.</summary>
+        public void Impact(float x, float y, float a)
+        {
+            punch = Mathf.Max(punch, Mathf.Clamp01(a));
+            if (a < 0.3f) return;
+            int i = shockNext++ % shocks.Length;
+            shocks[i].position = W.Pos(x, y, 1.5f); shockLife[i] = 1; shocks[i].gameObject.SetActive(true);
+            shocks[i].localScale = Vector3.one * 0.1f; shocks[i].GetComponent<Renderer>().sharedMaterial = shockMats[i];
+            shockMats[i].SetColor("_BaseColor", a > 1.1f ? new Color(1, 0.6f, 0.2f, 0.9f) : new Color(1, 1, 1, 0.8f));
+            shocks[i].name = "Shockwave " + a.ToString("0.0");
+            shockStrength[i] = a;
+        }
+        readonly float[] shockStrength = new float[4];
+
         // ---------- per-frame sync ----------
         public void EnsureHeroes(Match m)
         {
@@ -233,8 +260,24 @@ namespace Arena.Game
             if (sp > 0.01f) { var axis = Vector3.Cross(Vector3.up, v / sp); ballRot = Quaternion.AngleAxis(sp * dt / (BR * S) * Mathf.Rad2Deg, axis) * ballRot; }
             ball.rotation = ballRot;
             bool hot = b.Fire > 0 || (b.Owner != null && b.Owner.FireT > 0);
-            halo.SetActive(hot);
-            if (hot) halo.transform.localScale = Vector3.one * (1.6f + Random.value * 0.5f);
+            var ow = b.Owner;
+            bool full = ow != null && ((ow.Charging && ow.Charge >= 0.99f) || (ow.Curving != 0 && ow.CurveCharge >= 0.99f) || (ow.Lobbing && ow.LobCharge >= 0.99f));
+            halo.SetActive(hot || full);
+            if (hot) { haloMat.SetColor("_BaseColor", new Color(1, 0.42f, 0.06f, 0.5f)); halo.transform.localScale = Vector3.one * (1.6f + Random.value * 0.5f); }
+            else if (full) { haloMat.SetColor("_BaseColor", new Color(1, 1, 0.85f, 0.35f + 0.25f * Mathf.Sin(t * 30))); halo.transform.localScale = Vector3.one * (1.7f + 0.2f * Mathf.Sin(t * 30)); }
+            // ball punch on impact
+            punch = Mathf.Max(0, punch - dt * 4);
+            ball.localScale = Vector3.one * BR * 2 * S * (1 + punch * 0.9f);
+            for (int i = 0; i < shocks.Length; i++)
+            {
+                if (shockLife[i] <= 0) continue;
+                shockLife[i] -= dt * 2.6f;
+                if (shockLife[i] <= 0) { shocks[i].gameObject.SetActive(false); continue; }
+                float k = 1 - shockLife[i];
+                float ek = 1 - (1 - k) * (1 - k); // ease-out
+                shocks[i].localScale = Vector3.one * (0.15f + ek * (0.6f + 1.1f * shockStrength[i]));
+                var sc = shockMats[i].GetColor("_BaseColor"); sc.a = shockLife[i] * 0.85f; shockMats[i].SetColor("_BaseColor", sc);
+            }
             if (b.Fire > 0)
                 for (int i = 0; i < 2; i++)
                     flames.Emit(new ParticleSystem.EmitParams

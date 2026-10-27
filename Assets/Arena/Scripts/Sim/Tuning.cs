@@ -20,6 +20,9 @@ namespace Arena.Sim
         [Tooltip("Сила рывка")] [Range(500, 1400)] public float dashPow = 880;
         [Tooltip("Перезарядка рывка, с")] [Range(0.6f, 5)] public float dashCd = 2.2f;
 
+        [Header("Приём мяча")]
+        [Tooltip("Принимать и отбирать мяч любой стороной (выкл. — только лицом)")] public bool receiveAnySide = true;
+
         [Header("Навес")]
         [Range(100, 600)] public float lobMin = 250;
         [Range(500, 1800)] public float lobMax = 1150;

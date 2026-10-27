@@ -130,6 +130,7 @@ namespace Arena.Sim
             Events.Add(new SimEvent { Kind = FxKind.Burst, X = x, Y = y, Color = c, Count = n, Amount = spd });
         void Shake(float a) => Events.Add(new SimEvent { Kind = FxKind.Shake, Amount = a });
         void Rumble(SimPlayer p, float strength) { if (p != null && p.IsHuman) Events.Add(new SimEvent { Kind = FxKind.Rumble, Player = p, Amount = strength }); }
+        void Impact(float x, float y, float a) => Events.Add(new SimEvent { Kind = FxKind.Impact, X = x, Y = y, Amount = a });
         void Denied(SimPlayer p) { if (p.IsHuman) { Events.Add(new SimEvent { Kind = FxKind.Denied, Player = p }); Rumble(p, 0.15f); } }
         public FxColor TeamColor(SimPlayer p) => p.Team == Team.Home ? FxColor.Home : FxColor.Away;
 
@@ -261,6 +262,7 @@ namespace Arena.Sim
         void DashHit(SimPlayer a, SimPlayer b, float nx, float ny)
         {
             if (Ball.Owner == b) { ReleaseBall(b, 0.9f); Ball.Vx = b.Vx * 0.5f + nx * 260; Ball.Vy = b.Vy * 0.5f + ny * 260; }
+            Impact(b.X, b.Y, 0.8f);
             b.Stun = 0.75f; b.Vx = nx * 620; b.Vy = ny * 620; b.DashT = 0.12f;
             a.DashT = 0; a.Vx *= 0.3f; a.Vy *= 0.3f; b.Charging = false; b.Charge = 0;
             Shake(6); Rumble(a, 0.4f); Rumble(b, 0.6f);
@@ -269,7 +271,12 @@ namespace Arena.Sim
         // ---------- possession ----------
         bool IsFront(SimPlayer p) { var n = M.Norm(Ball.X - p.X, Ball.Y - p.Y); return n.x * p.Fx + n.y * p.Fy > FRONT; }
         void ReleaseBall(SimPlayer p, float cd) { if (Ball.Owner == p) { Ball.Owner = null; p.GrabCd = cd; } }
-        void TakeBall(SimPlayer p) { Ball.Owner = p; Ball.Last = p; Ball.Spin = 0; Ball.Lock = 0.3f; p.Charging = false; p.Charge = 0; Rumble(p, 0.15f); }
+        void TakeBall(SimPlayer p)
+        {
+            Ball.GlueAng = MathF.Atan2(Ball.Y - p.Y, Ball.X - p.X); // received from the side or back: rolls around to the front
+            Ball.Owner = p; Ball.Last = p; Ball.Spin = 0; Ball.Lock = 0.3f; p.Charging = false; p.Charge = 0; Rumble(p, 0.15f);
+            Events.Add(new SimEvent { Kind = FxKind.Receive, X = Ball.X, Y = Ball.Y, Player = p });
+        }
 
         void CollideBall(SimPlayer p)
         {
@@ -289,12 +296,13 @@ namespace Arena.Sim
                     float vx = b.Vx, vy = b.Vy, vn = vx * nx + vy * ny;
                     if (vn < 0) { vx -= 2 * vn * nx; vy -= 2 * vn * ny; }
                     float k = sp * T.fireKeep / Math.Max(1, M.Len(vx, vy)); b.Vx = vx * k; b.Vy = vy * k; b.Fire = 0;
+                    Impact(b.X, b.Y, 1.4f);
                     Burst(b.X, b.Y, FxColor.Fire, 28, 1.4f); Burst(b.X, b.Y, FxColor.FireYellow, 12, 0.8f); Shake(11); Rumble(p, 0.9f); Rumble(b.FireBy, 0.4f);
                 }
                 return;
             }
             float dx = b.X - p.X, dy = b.Y - p.Y, dd = M.Len(dx, dy);
-            bool canGrab = !p.Dummy && p.Stun <= 0 && p.GrabCd <= 0 && IsFront(p);
+            bool canGrab = !p.Dummy && p.Stun <= 0 && p.GrabCd <= 0 && (T.receiveAnySide || IsFront(p));
             if (b.Owner != null)
             { // steal: only a front touch on the carried ball, never from a teammate
                 if (b.Owner.Team == p.Team) return;
@@ -347,7 +355,11 @@ namespace Arena.Sim
             if (b.Owner != null)
             { // glued to the carrier's face
                 var p = b.Owner;
-                b.X = p.X + p.Fx * (R + BR + 1); b.Y = p.Y + p.Fy * (R + BR + 1); b.Vx = p.Vx; b.Vy = p.Vy; b.Z = b.Vz = 0;
+                // the ball rolls around the body to the front (fast), instead of snapping there
+                float face = MathF.Atan2(p.Fy, p.Fx), da = face - b.GlueAng;
+                while (da > MathF.PI) da -= MathF.PI * 2; while (da < -MathF.PI) da += MathF.PI * 2;
+                float step = 24 * dt; b.GlueAng += Math.Abs(da) <= step ? da : Math.Sign(da) * step;
+                b.X = p.X + MathF.Cos(b.GlueAng) * (R + BR + 1); b.Y = p.Y + MathF.Sin(b.GlueAng) * (R + BR + 1); b.Vx = p.Vx; b.Vy = p.Vy; b.Z = b.Vz = 0;
                 b.X = M.Clamp(b.X, BR, FW - BR);
                 bool inMouthD = b.X > GX1 + BR * 0.5f && b.X < GX2 - BR * 0.5f;
                 if (!inMouthD) b.Y = M.Clamp(b.Y, BR, FH - BR);
