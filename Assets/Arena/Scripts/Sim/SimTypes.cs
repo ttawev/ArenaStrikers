@@ -7,7 +7,7 @@ namespace Arena.Sim
     /// <summary>Home attacks toward y = 0 (right side of the screen), Away toward y = FH.</summary>
     public enum Team { Home, Away }
 
-    public enum Hero { Fire, Hook, Teleport, Curve }
+    public enum Hero { Fire, Hook, Teleport, Curve, Shade, Wall }
 
     public enum GameMode { Training = 0, OneVsOne = 1, TwoVsTwo = 2, FourVsFour = 4 }
 
@@ -21,7 +21,7 @@ namespace Arena.Sim
     }
 
     public enum FxKind { Burst, Shake, Goal, Rumble, Denied, Impact, Receive }
-    public enum FxColor { White, Mist, Fire, FireYellow, Blink, Home, Away, Spin, Dust }
+    public enum FxColor { White, Mist, Fire, FireYellow, Blink, Home, Away, Spin, Dust, Ice }
 
     /// <summary>Something the view should show or play: particles, camera shake, gamepad rumble.</summary>
     public struct SimEvent

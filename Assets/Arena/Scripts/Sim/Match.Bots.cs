@@ -61,7 +61,7 @@ namespace Arena.Sim
             float Dep(float y) => up ? FH - y : y; // distance from own goal line
             float gx = FW / 2 + (Rand() - 0.5f) * GOAL * 0.55f, gy = up ? -30 : FH + 30;
             float dBall = M.Len(ball.X - b.X, ball.Y - b.Y);
-            tmpFoes.Clear(); tmpFoes.AddRange(Enemies(b));
+            tmpFoes.Clear(); foreach (var f0 in Enemies(b)) if (!f0.Invisible) tmpFoes.Add(f0); // bots can't see an invisible Тень
             tmpTeam.Clear(); tmpTeam.AddRange(Mates(b));
             var foes = tmpFoes; var team = tmpTeam;
             if (!P.WantKick) b.Charging = false;
@@ -210,6 +210,20 @@ namespace Arena.Sim
                     P.Mx = mm > 1 ? mx / mm : mx; P.My = mm > 1 ? my / mm : my;
                 }
             }
+            // Стена: block a shot heading for our goal, or a carrier closing in on it
+            if (b.Hero == Hero.Wall && b.WallCd <= 0)
+            {
+                bool shotAtUs = threat && Dep(b.Y) < Dep(ball.Y) && dBall > 90 && dBall < T.wallLen * 0.9f;
+                bool carrierNear = foeHas && dBall > 70 && dBall < T.wallLen * 0.6f && Dep(b.Y) < Dep(ball.Owner.Y) && Dep(ball.Owner.Y) < FH * 0.4f;
+                if ((shotAtUs || carrierNear) && Rand() < D.Abil * 0.5f)
+                {
+                    var tb = M.Norm(ball.X + ball.Vx * 0.15f - b.X, ball.Y + ball.Vy * 0.15f - b.Y); b.Fx = tb.x; b.Fy = tb.y; // aim the fissure at the danger
+                    UseWall(b);
+                }
+            }
+            // Тень: vanish to get open while we attack, or to sneak up on the carrier
+            if (b.Hero == Hero.Shade && b.InvisCd <= 0 && !b.Invisible &&
+                ((mateHas && Rand() < D.Abil * 0.15f) || (foeHas && chase && dBall < 380 && dBall > 120 && Rand() < D.Abil * 0.3f))) UseInvis(b);
             if (!chase) return;
             if (b.Hero == Hero.Hook && b.HookCd <= 0 && ball.Hook == null && !mateHas && !Hooks.Exists(h => h.Owner == b) && dBall > 170 && dBall < T.hookRange * 0.85f && Rand() < D.Abil * 0.35f)
             {

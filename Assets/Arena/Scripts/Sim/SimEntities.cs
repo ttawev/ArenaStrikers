@@ -24,6 +24,9 @@ namespace Arena.Sim
         public bool Lobbing; public float LobCharge;
         public int Curving; public float CurveCharge;
         public float HookCd, FireCd, FireT, TpCd, TpBackT, TpFx, TpFy, CurveCd;
+        public float InvisT, InvisCd; // Тень: time left invisible, cooldown
+        public float WallCd;          // Стена
+        public bool Invisible => InvisT > 0;
         public readonly BotBrain Brain = new BotBrain();
 
         public bool IsHuman => HumanSlot >= 0;
@@ -33,7 +36,7 @@ namespace Arena.Sim
             Lobbing = false; LobCharge = 0; Curving = 0; CurveCharge = 0; CurveCd = 0;
             Brain.Curve = 0; Brain.WantKick = false;
             Vx = Vy = 0; DashT = 0; Stun = 0; Charge = 0; Charging = false; GrabCd = 0;
-            HookCd = FireCd = FireT = TpCd = TpBackT = 0;
+            HookCd = FireCd = FireT = TpCd = TpBackT = 0; InvisT = InvisCd = 0; WallCd = 0;
         }
     }
 
@@ -44,6 +47,18 @@ namespace Arena.Sim
         public float Lock, Spin, Fire, FireGrace;
         public float GlueAng; // where around the carrier the ball sits; rolls to the front after a reception
         public Hook Hook; // set while a hook is reeling the ball in
+    }
+
+    /// <summary>Ice wall: a thick segment centred at (X,Y) along (Tx,Ty). Stops the ball and players; a lob flies over.</summary>
+    /// <summary>Ice fissure: a ridge that shoots out from (X,Y) along (Tx,Ty), growing to MaxLen.
+    /// Whatever it reaches while growing is shoved aside; afterwards it blocks the ball and players. A lob flies over.</summary>
+    public class IceWall
+    {
+        public SimPlayer Owner;
+        public float X, Y, Tx, Ty, Len, MaxLen, Life, MaxLife;
+        public bool BallPushed;
+        public readonly System.Collections.Generic.HashSet<SimPlayer> Pushed = new System.Collections.Generic.HashSet<SimPlayer>();
+        public const float THICK = 30, HEIGHT = 80, GROW_SPEED = 4200;
     }
 
     public class Hook

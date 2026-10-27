@@ -10,7 +10,8 @@ namespace Arena.Game
         const float S = W.S;
         public readonly GameObject Root;
         readonly Transform body, legL, legR, armL, armR, stars, propeller, gem;
-        readonly GameObject[] hats = new GameObject[4];
+        readonly GameObject[] hats = new GameObject[6];
+        Renderer[] rends; Material[] origMats; Material ghostMat; bool ghosted; float ghostAlpha = -1;
         readonly GameObject arcObj, fireRing, rope, hookHead, tpMark, youMark;
         readonly Mesh arcMesh;
         float arcShown = -1;
@@ -67,6 +68,26 @@ namespace Arena.Game
             Shapes.Prim(PrimitiveType.Cube, propeller, Vector3.zero, V(32, 1.6f, 5.5f), Mat.Solid(Mat.Hex("#ff4f9a")), "bladeA");
             Shapes.Prim(PrimitiveType.Cube, propeller, Vector3.zero, V(5.5f, 1.6f, 32), Mat.Solid(Mat.Hex("#ffd23e")), "bladeB");
 
+            // Тень: low dark hood, a long scarf and two glowing eyes
+            hats[(int)Hero.Shade] = new GameObject("hat_shade"); hats[4].transform.SetParent(body, false);
+            var cloth = Mat.Solid(Mat.Hex("#2a2f3a"));
+            Shapes.Prim(PrimitiveType.Sphere, hats[4].transform, V(0, 74, -2), V(33, 30, 33), cloth, "hood");
+            Shapes.Prim(PrimitiveType.Cylinder, hats[4].transform, V(0, 62, 0), V(31, 4, 31), Mat.Solid(Mat.Hex("#3d4454")), "mask");
+            var scarf = Shapes.Prim(PrimitiveType.Cube, hats[4].transform, V(-6, 56, -26), V(7, 2, 40), Mat.Solid(Mat.Hex("#7b2fbf")), "scarf");
+            scarf.transform.localRotation = Quaternion.Euler(-25, 10, 0);
+            Shapes.Prim(PrimitiveType.Sphere, hats[4].transform, V(-5, 72, 14), V(5, 3, 3), Mat.Glow(Mat.Hex("#c9f7ff")), "eyeGlowL");
+            Shapes.Prim(PrimitiveType.Sphere, hats[4].transform, V(5, 72, 14), V(5, 3, 3), Mat.Glow(Mat.Hex("#c9f7ff")), "eyeGlowR");
+
+            // Стена: ice helmet with crystal spikes
+            hats[(int)Hero.Wall] = new GameObject("hat_wall"); hats[5].transform.SetParent(body, false);
+            Shapes.Prim(PrimitiveType.Sphere, hats[5].transform, V(0, 75, 0), V(31, 22, 31), Mat.Solid(Mat.Hex("#9fe8ff"), 0.8f), "helmet");
+            float[,] spikes = { { 0, 0, 26, 0 }, { -10, 3, 18, -18 }, { 10, 3, 18, 18 }, { 0, -10, 16, 0 } };
+            for (int i = 0; i < 4; i++)
+            {
+                var sp = Shapes.MeshObj(Shapes.Cone(5 * S, spikes[i, 2] * S, 6), hats[5].transform, Mat.Solid(Mat.Hex("#e6fbff"), 0.9f), "spike");
+                sp.transform.localPosition = V(spikes[i, 0], 82, spikes[i, 1]); sp.transform.localRotation = Quaternion.Euler(spikes[i, 1] < 0 ? -25 : 0, 0, -spikes[i, 3]);
+            }
+
             // ---- markers ----
             Shapes.MeshObj(Shapes.Ring((Field.R + 1) * S, (Field.R + 5) * S), Root.transform, Mat.Glow(teamCol), "teamRing").transform.localPosition = V(0, 0.6f, 0);
             arcMesh = new Mesh { name = "arc" };
@@ -84,6 +105,32 @@ namespace Arena.Game
             rope.SetActive(false); hookHead.SetActive(false); tpMark.SetActive(false); youMark.SetActive(false);
         }
 
+        void SetGhost(float alpha)
+        {
+            if (rends == null)
+            {
+                rends = Root.GetComponentsInChildren<Renderer>(true);
+                origMats = new Material[rends.Length];
+                for (int i = 0; i < rends.Length; i++) origMats[i] = rends[i].sharedMaterial;
+                ghostMat = Mat.Clear(new Color(0.75f, 0.9f, 1f, 0.3f));
+            }
+            if (alpha < 0)
+            {
+                for (int i = 0; i < rends.Length; i++) if (rends[i]) { rends[i].sharedMaterial = origMats[i]; rends[i].shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.On; rends[i].enabled = true; }
+                ghosted = false; ghostAlpha = -1; return;
+            }
+            if (!ghosted)
+            {
+                for (int i = 0; i < rends.Length; i++) if (rends[i]) { rends[i].sharedMaterial = ghostMat; rends[i].shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off; }
+                ghosted = true;
+            }
+            if (Mathf.Abs(alpha - ghostAlpha) > 0.005f)
+            {
+                for (int i = 0; i < rends.Length; i++) if (rends[i]) rends[i].enabled = alpha > 0;
+                ghostMat.SetColor("_BaseColor", new Color(0.75f, 0.9f, 1f, alpha)); ghostAlpha = alpha;
+            }
+        }
+
         public void SetVisible(bool on)
         {
             Root.SetActive(on);
@@ -95,7 +142,10 @@ namespace Arena.Game
             var tr = Root.transform;
             tr.position = W.Pos(p.X, p.Y);
             tr.rotation = W.Yaw(p.Fx, p.Fy);
-            for (int i = 0; i < 4; i++) hats[i].SetActive(i == (int)p.Hero);
+            for (int i = 0; i < hats.Length; i++) hats[i].SetActive(i == (int)p.Hero);
+            // invisible Тень: teammates see a ghost, opponents only a faint shimmer
+            if (p.Invisible) SetGhost(p.Team == m.Local.Team ? 0.28f : 0); // allies: a ghost; opponents: nothing at all
+            else if (ghosted) SetGhost(-1);
             if (p.Hero == Hero.Curve) propeller.localRotation = Quaternion.Euler(0, t * (500 + new Vector2(p.Vx, p.Vy).magnitude * 2.3f), 0);
             if (p.Hero == Hero.Teleport) { gem.localPosition = V(0, 124 + Mathf.Sin(t * 3) * 3, 0); gem.localRotation = Quaternion.Euler(45, t * 115, 45); }
 

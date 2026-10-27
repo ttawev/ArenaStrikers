@@ -229,6 +229,46 @@ namespace Arena.Game
         }
         readonly float[] shockStrength = new float[4];
 
+        // ice fissures: a translucent ridge plus a row of jagged shards that rise as it grows
+        readonly List<Transform> wallViews = new List<Transform>();
+        readonly List<Transform[]> wallShards = new List<Transform[]>();
+        Material wallMat, shardMat;
+        const int SHARDS = 14;
+        void SyncWalls(Match m, float t)
+        {
+            if (wallMat == null) { wallMat = Mat.Clear(new Color(0.7f, 0.93f, 1f, 0.45f)); shardMat = Mat.Solid(Mat.Hex("#d6f6ff"), 0.9f); }
+            while (wallViews.Count < m.Walls.Count)
+            {
+                wallViews.Add(Shapes.Prim(PrimitiveType.Cube, root, Vector3.zero, Vector3.one, wallMat, "IceRidge").transform);
+                var sh = new Transform[SHARDS];
+                for (int k = 0; k < SHARDS; k++) sh[k] = Shapes.MeshObj(Shapes.Cone(1, 1, 5), root, shardMat, "IceShard").transform;
+                wallShards.Add(sh);
+            }
+            for (int i = 0; i < wallViews.Count; i++)
+            {
+                bool on = i < m.Walls.Count; wallViews[i].gameObject.SetActive(on);
+                foreach (var sh in wallShards[i]) sh.gameObject.SetActive(false);
+                if (!on) continue;
+                var w = m.Walls[i];
+                float fade = Mathf.Clamp01(w.Life / 0.3f), len = Mathf.Max(1, w.Len);
+                wallViews[i].position = W.Pos(w.X + w.Tx * len / 2, w.Y + w.Ty * len / 2, IceWall.HEIGHT * 0.35f * fade);
+                wallViews[i].rotation = Quaternion.LookRotation(W.Dir(w.Tx, w.Ty), Vector3.up);
+                wallViews[i].localScale = new Vector3(IceWall.THICK * S, IceWall.HEIGHT * 0.7f * fade * S, len * S);
+                for (int k = 0; k < SHARDS; k++)
+                {
+                    float a = (k + 0.5f) / SHARDS * w.MaxLen;
+                    if (a > w.Len) break;
+                    float rise = Mathf.Clamp01((w.Len - a) / 120) * fade;
+                    float h = IceWall.HEIGHT * (0.8f + 0.45f * Mathf.Abs(Mathf.Sin(k * 2.7f))) * rise;
+                    float side = (k % 2 == 0 ? 1 : -1) * 6;
+                    var sh = wallShards[i][k]; sh.gameObject.SetActive(rise > 0.02f);
+                    sh.position = W.Pos(w.X + w.Tx * a - w.Ty * side, w.Y + w.Ty * a + w.Tx * side, 0);
+                    sh.rotation = Quaternion.LookRotation(W.Dir(w.Tx, w.Ty), Vector3.up) * Quaternion.Euler(0, k * 37, (k % 2 == 0 ? 12 : -12));
+                    sh.localScale = new Vector3(IceWall.THICK * 0.75f * S, Mathf.Max(0.001f, h * S), IceWall.THICK * 0.75f * S);
+                }
+            }
+        }
+
         // ---------- per-frame sync ----------
         public void EnsureHeroes(Match m)
         {
@@ -252,6 +292,7 @@ namespace Arena.Game
         public void Sync(Match m, float t, float dt, InputCommand localInput)
         {
             EnsureHeroes(m);
+            SyncWalls(m, t);
             for (int i = 0; i < m.Players.Count; i++) heroes[i].Sync(m, m.Players[i], t, m.Mode != GameMode.OneVsOne && m.Mode != GameMode.Training && i == 0);
 
             var b = m.Ball;

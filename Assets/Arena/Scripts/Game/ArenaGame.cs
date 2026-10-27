@@ -34,9 +34,9 @@ namespace Arena.Game
         InputCommand lastCmd;
 
         // menu selections
-        static readonly Hero[] HeroList = { Hero.Fire, Hero.Hook, Hero.Teleport, Hero.Curve };
-        static readonly string[] HeroNames = { "Жар", "Багор", "Миг", "Вихрь" };
-        static readonly string[] HeroAbility = { "Огненный суперудар", "Крюк", "Телепорт", "Кручёный удар" };
+        static readonly Hero[] HeroList = { Hero.Fire, Hero.Hook, Hero.Teleport, Hero.Curve, Hero.Shade, Hero.Wall };
+        static readonly string[] HeroNames = { "Жар", "Багор", "Миг", "Вихрь", "Тень", "Стена" };
+        static readonly string[] HeroAbility = { "Огненный суперудар", "Крюк", "Телепорт", "Кручёный удар", "Невидимость", "Ледяной разлом" };
         static readonly GameMode[] ModeList = { GameMode.OneVsOne, GameMode.TwoVsTwo, GameMode.FourVsFour, GameMode.Training };
         static readonly string[] ModeNames = { "1 на 1", "2 на 2", "4 на 4", "Тренировка" };
         static readonly string[] DiffNames = { "Лёгкий", "Средний", "Сложный" };
@@ -136,8 +136,8 @@ namespace Arena.Game
                 case State.Menu:
                     if (gp != null)
                     {
-                        if (gp.dpad.left.wasPressedThisFrame) heroSel = (heroSel + 3) % 4;
-                        if (gp.dpad.right.wasPressedThisFrame) heroSel = (heroSel + 1) % 4;
+                        if (gp.dpad.left.wasPressedThisFrame) heroSel = (heroSel + HeroList.Length - 1) % HeroList.Length;
+                        if (gp.dpad.right.wasPressedThisFrame) heroSel = (heroSel + 1) % HeroList.Length;
                         if (gp.dpad.up.wasPressedThisFrame) modeSel = (modeSel + 3) % 4;
                         if (gp.dpad.down.wasPressedThisFrame) modeSel = (modeSel + 1) % 4;
                         if (gp.leftShoulder.wasPressedThisFrame) diffSel = Mathf.Max(0, diffSel - 1);
@@ -282,7 +282,7 @@ namespace Arena.Game
             bool pad = input.UsingGamepad;
             float size = Mathf.Clamp(h * 0.075f, 56, 84), gap = size * 1.05f;
             float cx = w - gap * 1.7f - 20, cy = h - gap * 1.6f - 20;
-            Color heroCol = you.Hero == Hero.Fire ? Mat.Fire : you.Hero == Hero.Hook ? Mat.Hex("#e2c48a") : you.Hero == Hero.Teleport ? Mat.Blink : Mat.Spin;
+            Color heroCol = you.Hero == Hero.Fire ? Mat.Fire : you.Hero == Hero.Hook ? Mat.Hex("#e2c48a") : you.Hero == Hero.Teleport ? Mat.Blink : you.Hero == Hero.Shade ? Mat.Hex("#b48cff") : you.Hero == Hero.Wall ? Mat.Hex("#9fe8ff") : Mat.Spin;
             if (denyFlash > 0) heroCol = Mat.Away;
 
             // A — kick (fill = charge while held), X — lob, B — dash, Y — hero ability
@@ -295,6 +295,10 @@ namespace Arena.Game
                 case Hero.Hook: ActionButton(cx, cy - gap, size, pad ? "Y" : "U", "Крюк", 1 - you.HookCd / T.hookCd, heroCol, match.Hooks.Exists(k => k.Owner == you)); break;
                 case Hero.Teleport:
                     ActionButton(cx, cy - gap, size, pad ? "Y" : "U", you.TpBackT > 0 ? "Назад!" : "Телепорт", you.TpBackT > 0 ? 1 : 1 - you.TpCd / T.tpCd, you.TpBackT > 0 ? Mat.Hex("#c9f3ff") : heroCol, you.TpBackT > 0); break;
+                case Hero.Wall:
+                    ActionButton(cx, cy - gap, size, pad ? "Y" : "U", "Разлом", 1 - you.WallCd / T.wallCd, heroCol, match.Walls.Exists(k => k.Owner == you)); break;
+                case Hero.Shade:
+                    ActionButton(cx, cy - gap, size, pad ? "Y" : "U", you.Invisible ? "Невидим" : "Тень", you.Invisible ? you.InvisT / T.invisDur : 1 - you.InvisCd / T.invisCd, heroCol, you.Invisible); break;
                 case Hero.Curve:
                     float cf = 1 - you.CurveCd / T.curveCd;
                     ActionButton(cx - gap * 0.55f, cy - gap * 1.05f, size * 0.85f, pad ? "LB" : "U", "↶ Влево", you.Curving < 0 ? you.CurveCharge : cf, heroCol, you.Curving < 0);
@@ -332,8 +336,9 @@ namespace Arena.Game
             Shadowed(new Rect(0, y, w, 24), "серая коробка · этап 1", small.Center(), new Color(0.6f, 0.7f, 0.68f)); y += 44;
 
             GUI.Label(new Rect(x, y, cw, 24), "Герой  (крестовина ← →)", small); y += 26;
-            for (int i = 0; i < 4; i++)
-                if (Toggle(new Rect(x + i * (cw / 4), y, cw / 4 - 8, 54), heroSel == i, HeroNames[i] + "\n" + HeroAbility[i])) heroSel = i;
+            int hn = HeroList.Length;
+            for (int i = 0; i < hn; i++)
+                if (Toggle(new Rect(x + i * (cw / hn), y, cw / hn - 8, 54), heroSel == i, HeroNames[i] + "\n" + HeroAbility[i])) heroSel = i;
             y += 70;
             GUI.Label(new Rect(x, y, cw, 24), "Формат  (крестовина ↑ ↓)", small); y += 26;
             for (int i = 0; i < 4; i++)
@@ -354,7 +359,7 @@ namespace Arena.Game
         {
             var old = GUI.backgroundColor;
             GUI.backgroundColor = on ? Mat.Home : new Color(0.3f, 0.4f, 0.4f);
-            bool clicked = GUI.Button(r, text);
+            bool clicked = GUI.Button(r, text, new GUIStyle(GUI.skin.button) { wordWrap = true, fontSize = 13 });
             GUI.backgroundColor = old;
             return clicked;
         }

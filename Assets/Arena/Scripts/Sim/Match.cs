@@ -14,6 +14,7 @@ namespace Arena.Sim
         public readonly List<SimPlayer> Players = new List<SimPlayer>();
         public readonly SimBall Ball = new SimBall();
         public readonly List<Hook> Hooks = new List<Hook>();
+        public readonly List<IceWall> Walls = new List<IceWall>();
         public readonly List<SimEvent> Events = new List<SimEvent>();
 
         public GameMode Mode { get; private set; }
@@ -35,7 +36,7 @@ namespace Arena.Sim
         }
 
         // ---------- setup ----------
-        static readonly Hero[] AllHeroes = { Hero.Fire, Hero.Hook, Hero.Teleport, Hero.Curve };
+        static readonly Hero[] AllHeroes = { Hero.Fire, Hero.Hook, Hero.Teleport, Hero.Curve, Hero.Shade, Hero.Wall };
 
         Hero[] Shuffled(Hero[] a)
         {
@@ -62,7 +63,8 @@ namespace Arena.Sim
             switch (mode)
             {
                 case GameMode.Training:
-                    Add(Team.Away, opp[0], -1, true); Add(Team.Away, opp[1], -1, true); break;
+                    // one mannequin is always a Тень that walks around and keeps vanishing — to see invisibility from the other side
+                    Add(Team.Away, Hero.Shade, -1, true); Add(Team.Away, opp[0] == Hero.Shade ? opp[1] : opp[0], -1, true); break;
                 case GameMode.OneVsOne:
                     Add(Team.Away, opp[0]); break;
                 case GameMode.TwoVsTwo:
@@ -93,7 +95,7 @@ namespace Arena.Sim
             var b = Ball;
             b.X = FW / 2; b.Y = FH / 2; b.Vx = b.Vy = 0; b.Owner = null; b.Lock = 0;
             foreach (var p in Players) { p.ResetForKickoff(); p.Brain.T = Rand() * 0.1f; }
-            Hooks.Clear(); b.Z = b.Vz = 0; b.Spin = 0; b.Last = null; b.Hook = null; b.Fire = 0; b.FireBy = null;
+            Hooks.Clear(); Walls.Clear(); b.Z = b.Vz = 0; b.Spin = 0; b.Last = null; b.Hook = null; b.Fire = 0; b.FireBy = null;
             var P = Players;
             switch (Mode)
             {
@@ -164,7 +166,9 @@ namespace Arena.Sim
                 else BotStep(p, dt);
             }
             StepHooks(dt);
+            StepWalls(dt);
             CollidePlayers();
+            foreach (var p in Players) WallPushPlayer(p);
             foreach (var p in Players) CollideBall(p);
             StepBall(dt);
         }
@@ -193,13 +197,22 @@ namespace Arena.Sim
                 if (p.Hero == Hero.Hook) UseHook(p, ix, iy);
                 else if (p.Hero == Hero.Fire) UseFire(p);
                 else if (p.Hero == Hero.Teleport) UseTp(p);
+                else if (p.Hero == Hero.Shade) UseInvis(p);
+                else if (p.Hero == Hero.Wall) UseWall(p);
             }
             StepPlayer(p, ix, iy, 1, dt);
         }
 
         void DummyStep(SimPlayer d, float dt)
         {
-            float dx = d.HomeX - d.X, dy = d.HomeY - d.Y, dd = M.Len(dx, dy);
+            float hx = d.HomeX;
+            if (d.Hero == Hero.Shade)
+            { // patrol sideways; vanish for invisDur, then stay visible ~2.5 s
+                d.Brain.T += dt;
+                hx = M.Clamp(d.HomeX + MathF.Sin(d.Brain.T * 0.6f) * 300, R + 40, FW - R - 40);
+                if (!d.Invisible && d.InvisCd <= 0 && d.Stun <= 0) { UseInvis(d); d.InvisCd = T.invisDur + 2.5f; }
+            }
+            float dx = hx - d.X, dy = d.HomeY - d.Y, dd = M.Len(dx, dy);
             if (dd > 10) StepPlayer(d, dx / dd, dy / dd, 0.45f, dt);
             else
             {
@@ -215,6 +228,8 @@ namespace Arena.Sim
             p.KickCd = Math.Max(0, p.KickCd - dt); p.DashCd = Math.Max(0, p.DashCd - dt * cdk); p.Flash = Math.Max(0, p.Flash - dt); p.GrabCd = Math.Max(0, p.GrabCd - dt);
             p.HookCd = Math.Max(0, p.HookCd - dt * cdk); p.FireCd = Math.Max(0, p.FireCd - dt * cdk); p.TpCd = Math.Max(0, p.TpCd - dt * cdk);
             p.TpBackT = Math.Max(0, p.TpBackT - dt); p.CurveCd = Math.Max(0, p.CurveCd - dt * cdk);
+            p.InvisCd = Math.Max(0, p.InvisCd - dt * cdk); p.WallCd = Math.Max(0, p.WallCd - dt * cdk);
+            if (p.InvisT > 0) { p.InvisT -= dt; if (p.InvisT <= 0) Reveal(p); }
             if (p.Stun > 0)
             {
                 p.Stun -= dt; ix = iy = 0; p.Charging = false; p.Charge = 0; p.Lobbing = false; p.LobCharge = 0; p.Curving = 0; p.CurveCharge = 0;
@@ -263,6 +278,7 @@ namespace Arena.Sim
         {
             if (Ball.Owner == b) { ReleaseBall(b, 0.9f); Ball.Vx = b.Vx * 0.5f + nx * 260; Ball.Vy = b.Vy * 0.5f + ny * 260; }
             Impact(b.X, b.Y, 0.8f);
+            Reveal(b);
             b.Stun = 0.75f; b.Vx = nx * 620; b.Vy = ny * 620; b.DashT = 0.12f;
             a.DashT = 0; a.Vx *= 0.3f; a.Vy *= 0.3f; b.Charging = false; b.Charge = 0;
             Shake(6); Rumble(a, 0.4f); Rumble(b, 0.6f);
@@ -387,6 +403,7 @@ namespace Arena.Sim
             float cap = b.Fire > 0 ? 3400 : 2200, sp = M.Len(b.Vx, b.Vy);
             if (sp > cap) { b.Vx *= cap / sp; b.Vy *= cap / sp; }
             b.X += b.Vx * dt; b.Y += b.Vy * dt;
+            WallBounceBall();
             bool inMouth = b.X > GX1 && b.X < GX2 && b.Z + BR * 2 < GOALH + 2; // over the crossbar = no goal
             if (b.Y < BR + 2 || b.Y > FH - BR - 2)
             { // inside a goal: net side walls

@@ -47,6 +47,17 @@ namespace Arena.Sim
         [Tooltip("Затухание закрутки")] [Range(0.2f, 3)] public float curveDecay = 0.9f;
         [Range(0.5f, 10)] public float curveCd = 3;
 
+        [Header("Тень — невидимость")]
+        [Tooltip("Длительность невидимости, с")] [Range(1, 8)] public float invisDur = 3;
+        [Range(3, 25)] public float invisCd = 10;
+
+        [Header("Стена — ледяной разлом")]
+        [Tooltip("Длина разлома")] [Range(200, 1000)] public float wallLen = 600;
+        [Tooltip("Сколько стоит разлом, с")] [Range(0.5f, 6)] public float wallDur = 3f;
+        [Range(2, 20)] public float wallCd = 10;
+        [Tooltip("Сила отталкивания тех, кого задел разлом")] [Range(0, 1200)] public float wallPush = 520;
+        [Tooltip("Отскок мяча от стены")] [Range(0.1f, 1)] public float wallBounce = 0.6f;
+
         [Header("Миг — телепорт")]
         [Range(120, 500)] public float tpDist = 260;
         [Tooltip("Окно возврата, с")] [Range(0.4f, 2.5f)] public float tpBack = 1.0f;

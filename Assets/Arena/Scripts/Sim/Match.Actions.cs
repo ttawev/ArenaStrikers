@@ -13,7 +13,7 @@ namespace Arena.Sim
             if (p.KickCd > 0 || p.Stun > 0 || p.FireT > 0 || b.Hook != null || b.Z > LOW) return false;
             if (b.Owner != null && b.Owner != p) return false;
             if (b.Owner == null && M.Len(b.X - p.X, b.Y - p.Y) > R + BR + 18) return false;
-            p.KickCd = 0.22f; b.Last = p; b.Spin = 0;
+            p.KickCd = 0.22f; b.Last = p; b.Spin = 0; Reveal(p); // a shot gives Тень away
             if (b.Owner != p) p.GrabCd = Math.Max(p.GrabCd, 0.3f);
             float pow = T.kick * (0.7f + (T.charge - 0.7f) * charge);
             Rumble(p, charge > 0.6f ? 0.35f : 0.2f);
@@ -89,11 +89,13 @@ namespace Arena.Sim
         {
             var b = Ball;
             if (b.Owner == p) ReleaseBall(p, 0.45f); else p.GrabCd = 0.45f;
-            p.KickCd = 0.25f; p.Flash = 0.15f; b.Last = p; b.Spin = 0;
+            p.KickCd = 0.25f; p.Flash = 0.15f; b.Last = p; b.Spin = 0; Reveal(p);
             b.X = p.X + a.x * (R + BR + 2); b.Y = p.Y + a.y * (R + BR + 2);
             var v = LobVel(D - (R + BR + 2));
             b.Vx = a.x * v.vh; b.Vy = a.y * v.vh; b.Vz = v.vz; b.Z = 1;
-            Rumble(p, 0.25f); Impact(b.X, b.Y, 0.35f);
+            // same punch as a kick: from half charge up it freezes the frame and sends a shock ring
+            float lobCharge = M.Clamp01((D - T.lobMin) / Math.Max(1, T.lobMax - T.lobMin));
+            Rumble(p, 0.2f + 0.3f * lobCharge); Impact(b.X, b.Y, lobCharge >= 0.5f ? lobCharge : 0.2f);
         }
         bool TryLob(SimPlayer p, float ax, float ay, float charge)
         {
@@ -170,7 +172,7 @@ namespace Arena.Sim
                         if (v.FireT > 0) { v.FireT = 0; v.FireCd = T.fireCd * 0.3f; }
                         Burst(h.X, h.Y, FxColor.Mist, 12, 0.7f); Shake(4); Rumble(o, 0.3f); Rumble(v, 0.5f);
                     }
-                    if (h.Dist >= T.hookRange || h.X < 0 || h.X > FW || h.Y < 0 || h.Y > FH) h.Back = true;
+                    if (h.Dist >= T.hookRange || h.X < 0 || h.X > FW || h.Y < 0 || h.Y > FH || HitsWall(h.X, h.Y, 6)) h.Back = true;
                 }
                 else
                 {
@@ -229,6 +231,145 @@ namespace Arena.Sim
             b.Vx = dx * T.firePow; b.Vy = dy * T.firePow; b.Fire = 1.8f; b.FireBy = p; b.Last = p; b.Spin = 0; b.FireGrace = 0.2f;
             p.FireCd = T.fireCd; p.Flash = 0.2f; Shake(6); Rumble(p, 0.6f); Impact(b.X, b.Y, 1.2f);
             Burst(b.X, b.Y, FxColor.Fire, 16, 1.2f);
+        }
+
+        // ---------- invisibility (Тень) ----------
+        bool UseInvis(SimPlayer p)
+        {
+            if (p.InvisCd > 0 || p.Stun > 0 || p.Invisible) { Denied(p); return false; }
+            p.InvisT = T.invisDur; p.InvisCd = T.invisCd;
+            Burst(p.X, p.Y, FxColor.Dust, 18, 0.7f); Rumble(p, 0.2f);
+            return true;
+        }
+        /// <summary>Ends invisibility early (on a kick, a lob, or being knocked down).</summary>
+        void Reveal(SimPlayer p)
+        {
+            if (p.InvisT > 0) { p.InvisT = 0; Burst(p.X, p.Y, FxColor.Dust, 10, 0.5f); }
+            else if (p.InvisT < 0) p.InvisT = 0;
+        }
+
+        // ---------- ice fissure (Стена) ----------
+        bool UseWall(SimPlayer p)
+        {
+            if (p.WallCd > 0 || p.Stun > 0) { Denied(p); return false; }
+            float d = R + 14;
+            var w = new IceWall { Owner = p, X = p.X + p.Fx * d, Y = p.Y + p.Fy * d, Tx = p.Fx, Ty = p.Fy, Len = 0, MaxLen = T.wallLen, Life = T.wallDur, MaxLife = T.wallDur };
+            Walls.Add(w); p.WallCd = T.wallCd;
+            Shake(6); Rumble(p, 0.45f);
+            return true;
+        }
+
+        void StepWalls(float dt)
+        {
+            foreach (var w in Walls)
+            {
+                if (w.Len < w.MaxLen)
+                { // the ridge races forward; stop at the pitch edge
+                    float old = w.Len;
+                    w.Len = Math.Min(w.MaxLen, w.Len + IceWall.GROW_SPEED * dt);
+                    float ex = w.X + w.Tx * w.Len, ey = w.Y + w.Ty * w.Len;
+                    if (ex < 0 || ex > FW || ey < -NET || ey > FH + NET) { w.MaxLen = w.Len; }
+                    for (float a = old; a < w.Len; a += 40) Burst(w.X + w.Tx * a, w.Y + w.Ty * a, FxColor.Ice, 3, 0.7f);
+                    FissurePush(w);
+                }
+                w.Life -= dt;
+                if (w.Life <= 0) Shatter(w);
+            }
+            Walls.RemoveAll(w => w.Life <= 0);
+        }
+
+        // shove aside whatever the growing ridge reaches (once per object)
+        void FissurePush(IceWall w)
+        {
+            foreach (var q in Players)
+            {
+                if (q == w.Owner || w.Pushed.Contains(q)) continue;
+                var L = WallLocal(w, q.X, q.Y);
+                if (L.along < -R || L.along > w.Len + R || Math.Abs(L.across) > R + IceWall.THICK / 2 + 6) continue;
+                w.Pushed.Add(q);
+                float side = L.across >= 0 ? 1 : -1, nx = -w.Ty * side, ny = w.Tx * side;
+                q.X = L.cx + nx * (R + IceWall.THICK / 2 + 1); q.Y = L.cy + ny * (R + IceWall.THICK / 2 + 1);
+                q.Vx = nx * T.wallPush; q.Vy = ny * T.wallPush; q.DashT = 0.14f; q.Charging = false; q.Charge = 0;
+                if (Ball.Owner == q && q.Team != w.Owner.Team) { ReleaseBall(q, 0.5f); Ball.Vx = nx * T.wallPush * 0.8f; Ball.Vy = ny * T.wallPush * 0.8f; }
+                Rumble(q, 0.4f); Burst(q.X, q.Y, FxColor.Ice, 8, 0.6f);
+            }
+            var b = Ball;
+            if (!w.BallPushed && b.Owner == null && b.Hook == null && b.Z < IceWall.HEIGHT)
+            {
+                var L = WallLocal(w, b.X, b.Y);
+                if (L.along >= -BR && L.along <= w.Len + BR && Math.Abs(L.across) <= BR + IceWall.THICK / 2 + 4)
+                {
+                    w.BallPushed = true;
+                    float side = L.across >= 0 ? 1 : -1, nx = -w.Ty * side, ny = w.Tx * side;
+                    b.X = L.cx + nx * (BR + IceWall.THICK / 2 + 1); b.Y = L.cy + ny * (BR + IceWall.THICK / 2 + 1);
+                    b.Vx = b.Vx * 0.3f + nx * T.wallPush * 1.2f; b.Vy = b.Vy * 0.3f + ny * T.wallPush * 1.2f; b.Vz = 380; b.Z = Math.Max(b.Z, 1); b.Spin = 0;
+                    Impact(b.X, b.Y, 0.6f);
+                }
+            }
+        }
+
+        void Shatter(IceWall w)
+        {
+            w.Life = 0;
+            for (float a = 0; a <= w.Len; a += 60) Burst(w.X + w.Tx * a, w.Y + w.Ty * a, FxColor.Ice, 5, 0.9f);
+        }
+
+        // position of (x,y) relative to the ridge: along its length, across it, and the nearest point on it
+        static (float along, float across, float cx, float cy) WallLocal(IceWall w, float x, float y)
+        {
+            float dx = x - w.X, dy = y - w.Y;
+            float along = dx * w.Tx + dy * w.Ty, across = dx * -w.Ty + dy * w.Tx;
+            float a = M.Clamp(along, 0, w.Len);
+            return (along, across, w.X + w.Tx * a, w.Y + w.Ty * a);
+        }
+
+        bool HitsWall(float x, float y, float r)
+        {
+            foreach (var w in Walls) { var L = WallLocal(w, x, y); if (M.Len(x - L.cx, y - L.cy) < r + IceWall.THICK / 2) return true; }
+            return false;
+        }
+
+        void WallBounceBall()
+        {
+            var b = Ball;
+            if (b.Owner != null || b.Hook != null || b.Z > IceWall.HEIGHT) return;
+            foreach (var w in Walls)
+            {
+                if (w.Life <= 0) continue;
+                var L = WallLocal(w, b.X, b.Y);
+                float dx = b.X - L.cx, dy = b.Y - L.cy, d = M.Len(dx, dy), minD = BR + IceWall.THICK / 2;
+                if (d >= minD) continue;
+                float nx, ny;
+                if (d > 0.01f) { nx = dx / d; ny = dy / d; } else { nx = -w.Ty; ny = w.Tx; }
+                if (b.Fire > 0)
+                { // the fire shot smashes the ridge but loses half its speed
+                    Shatter(w); b.Vx *= 0.5f; b.Vy *= 0.5f; Impact(b.X, b.Y, 1.1f); Shake(8);
+                    continue;
+                }
+                b.X = L.cx + nx * minD; b.Y = L.cy + ny * minD;
+                float vn = b.Vx * nx + b.Vy * ny;
+                if (vn < 0)
+                {
+                    b.Vx -= (1 + T.wallBounce) * vn * nx; b.Vy -= (1 + T.wallBounce) * vn * ny; b.Spin = 0;
+                    if (-vn > 500) { Burst(b.X, b.Y, FxColor.Ice, 8, 0.6f); Impact(b.X, b.Y, Math.Min(1, -vn / 1600)); }
+                }
+            }
+            Walls.RemoveAll(w => w.Life <= 0);
+        }
+
+        void WallPushPlayer(SimPlayer p)
+        {
+            foreach (var w in Walls)
+            {
+                var L = WallLocal(w, p.X, p.Y);
+                float dx = p.X - L.cx, dy = p.Y - L.cy, d = M.Len(dx, dy), minD = R + IceWall.THICK / 2;
+                if (d >= minD) continue;
+                float nx, ny;
+                if (d > 0.01f) { nx = dx / d; ny = dy / d; } else { nx = -w.Ty; ny = w.Tx; }
+                p.X = L.cx + nx * minD; p.Y = L.cy + ny * minD;
+                float vn = p.Vx * nx + p.Vy * ny;
+                if (vn < 0) { p.Vx -= vn * nx; p.Vy -= vn * ny; }
+            }
         }
 
         // ---------- teleport (Миг) ----------

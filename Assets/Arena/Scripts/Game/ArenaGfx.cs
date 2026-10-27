@@ -100,6 +100,7 @@ namespace Arena.Game
                 case FxColor.Spin: return Spin;
                 case FxColor.Dust: return Dust;
                 case FxColor.Mist: return Mist;
+                case FxColor.Ice: return Hex("#bff3ff");
                 default: return Color.white;
             }
         }
