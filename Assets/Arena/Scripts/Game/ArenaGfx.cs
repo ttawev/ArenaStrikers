@@ -54,6 +54,16 @@ namespace Arena.Game
             return m;
         }
 
+        /// <summary>A new lit material with a colour texture (hero models).</summary>
+        public static Material Textured(Texture tex, float smooth = 0.1f)
+        {
+            var m = new Material(Lit);
+            m.SetTexture("_BaseMap", tex);
+            m.SetColor("_BaseColor", Color.white);
+            m.SetFloat("_Smoothness", smooth);
+            return m;
+        }
+
         /// <summary>A new (not cached) transparent unlit material; additive for glows.</summary>
         public static Material Clear(Color c, bool additive = false)
         {

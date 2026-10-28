@@ -21,6 +21,9 @@ namespace Arena.Game
         [Tooltip("Тряска камеры, множитель")] [Range(0, 3)] public float shakeScale = 1;
         [Tooltip("Рывок камеры (приближение) при ударе, градусы")] [Range(0, 8)] public float fovKick = 3;
 
+        [Header("Модели героев")]
+        public HeroArtTuning heroArt = new HeroArtTuning();
+
         enum State { Menu, Playing, Paused, Ended }
         State state = State.Menu;
         Match match;
@@ -93,6 +96,8 @@ namespace Arena.Game
             else match.Events.Clear();
             input.UpdateRumble(dt);
             denyFlash = Mathf.Max(0, denyFlash - dt);
+            HeroModel.Tune = heroArt;
+            HeroModel.FrameDt = state == State.Paused || hitstop > 0 ? 0 : dt;
             view.Sync(match, Time.time, dt, state == State.Playing ? lastCmd : default);
             UpdateCamera(dt);
         }

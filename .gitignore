@@ -38,3 +38,7 @@ crashlytics-build.properties
 # OS junk
 .DS_Store
 Thumbs.db
+
+# Blender backups
+*.blend1
+*.blend2

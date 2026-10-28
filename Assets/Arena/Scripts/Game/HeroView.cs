@@ -15,6 +15,8 @@ namespace Arena.Game
         readonly GameObject arcObj, fireRing, rope, hookHead, tpMark, youMark;
         readonly Mesh arcMesh;
         float arcShown = -1;
+        readonly Team team; HeroModel model; int modelHero = -1;
+        float prevKickCd, prevCharge, prevLob, prevFireT, animLock;
 
         static Vector3 V(float x, float y, float z) => new Vector3(x * S, y * S, z * S);
 
@@ -22,6 +24,7 @@ namespace Arena.Game
         {
             Root = new GameObject(name);
             Root.transform.SetParent(parent, false);
+            this.team = team;
             Color teamCol = team == Team.Home ? Mat.Home : Mat.Away;
             var shirt = Mat.Solid(teamCol);
             var pants = Mat.Solid(team == Team.Home ? Mat.Hex("#3a2a10") : Mat.Hex("#3a1420"));
@@ -131,6 +134,45 @@ namespace Arena.Game
             }
         }
 
+        /// <summary>Uses the rigged model when the hero has art, otherwise the grey-box body.</summary>
+        void SwapModel(Hero h)
+        {
+            if (ghosted) SetGhost(-1);
+            rends = null;
+            if (model != null) Object.Destroy(model.Go);
+            model = HeroModel.Create(h, team, Root.transform);
+            modelHero = (int)h;
+            bool grey = model == null;
+            body.gameObject.SetActive(grey); legL.gameObject.SetActive(grey); legR.gameObject.SetActive(grey);
+        }
+
+        void DriveModel(SimPlayer p)
+        {
+            var T = HeroModel.Tune; float dt = HeroModel.FrameDt;
+            float speed = new Vector2(p.Vx, p.Vy).magnitude;
+            bool kicked = p.KickCd > prevKickCd + 0.05f;
+            if (p.FireT > 0 && prevFireT <= 0)
+            {   // fire super-kick: the wind-up plays while the sim charges it
+                model.Play(HeroAnim.KickStrong, T.fade * 0.5f, true, T.fireSpeed, T.fireStart);
+                animLock = p.FireT + T.kickHold;
+            }
+            else if (kicked && p.FireT <= 0 && prevFireT <= 0)
+            {
+                bool strong = prevCharge > 0.6f || prevLob > 0.6f;
+                if (strong) model.Play(HeroAnim.KickStrong, T.fade * 0.5f, true, T.strongSpeed, T.strongStart);
+                else model.Play(HeroAnim.Kick, T.fade * 0.5f, true, T.kickSpeed, T.kickStart);
+                animLock = T.kickHold;
+            }
+            animLock -= dt;
+            if (p.Stun > 0) model.Play(HeroAnim.Stun, T.fade);
+            else if (p.DashT > 0) model.Play(HeroAnim.Dash, T.fade * 0.5f, false, T.dashSpeed, T.dashStart);
+            else if (animLock > 0) { }
+            else if (speed > 30) model.Play(HeroAnim.Run, T.fade, false, Mathf.Clamp(speed / T.runRef, 0.6f, 1.8f));
+            else model.Play(HeroAnim.Idle, T.fade);
+            model.Tick(dt);
+            prevKickCd = p.KickCd; prevCharge = p.Charging ? p.Charge : 0; prevLob = p.Lobbing ? p.LobCharge : 0; prevFireT = p.FireT;
+        }
+
         public void SetVisible(bool on)
         {
             Root.SetActive(on);
@@ -142,6 +184,7 @@ namespace Arena.Game
             var tr = Root.transform;
             tr.position = W.Pos(p.X, p.Y);
             tr.rotation = W.Yaw(p.Fx, p.Fy);
+            if (modelHero != (int)p.Hero) SwapModel(p.Hero);
             for (int i = 0; i < hats.Length; i++) hats[i].SetActive(i == (int)p.Hero);
             // invisible Тень: teammates see a ghost, opponents only a faint shimmer
             if (p.Invisible) SetGhost(p.Team == m.Local.Team ? 0.28f : 0); // allies: a ghost; opponents: nothing at all
@@ -159,6 +202,8 @@ namespace Arena.Game
             float lean = p.Flash > 0 ? 0.4f : p.FireT > 0 ? -0.35f : p.Lobbing ? -0.12f - 0.25f * p.LobCharge : charge > 0 ? -0.18f * charge : p.DashT > 0 ? 0.3f : 0;
             float wobble = p.Stun > 0 ? Mathf.Sin(t * 11) * 0.28f : 0;
             body.localRotation = Quaternion.Euler(lean * Mathf.Rad2Deg, 0, wobble * Mathf.Rad2Deg);
+
+            if (model != null) DriveModel(p);
 
             stars.gameObject.SetActive(p.Stun > 0);
             if (p.Stun > 0)
