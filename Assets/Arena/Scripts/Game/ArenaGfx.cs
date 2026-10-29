@@ -55,10 +55,11 @@ namespace Arena.Game
         }
 
         /// <summary>A new lit material with a colour texture (hero models).</summary>
-        public static Material Textured(Texture tex, float smooth = 0.1f)
+        public static Material Textured(Texture tex, float smooth = 0.1f, Texture normal = null)
         {
             var m = new Material(Lit);
             m.SetTexture("_BaseMap", tex);
+            if (normal != null) { m.SetTexture("_BumpMap", normal); m.EnableKeyword("_NORMALMAP"); }
             m.SetColor("_BaseColor", Color.white);
             m.SetFloat("_Smoothness", smooth);
             return m;

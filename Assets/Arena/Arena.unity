@@ -168,6 +168,7 @@ MonoBehaviour:
     hookSpd: 1500
     hookStun: 0.5
     hookCd: 5
+    hookGrab: 26
     fireDelay: 0.4
     firePow: 2300
     fireStun: 1
@@ -192,6 +193,35 @@ MonoBehaviour:
   hitstopScale: 1
   shakeScale: 1
   fovKick: 3
+  heroArt:
+    height: 1.35
+    modelYaw: 0
+    runRef: 300
+    fade: 0.12
+    kickHold: 0.45
+    kickStart: 0.3
+    kickSpeed: 1.4
+    strongStart: 0.4
+    strongSpeed: 1.3
+    fireStart: 0.15
+    fireSpeed: 1.2
+    dashStart: 0.15
+    dashSpeed: 1.6
+    tailAmount: 0
+    tailStiff: 5
+    tailDamp: 0
+    tailWag: 0
+    windLift: 0.8
+    windUp: 0.35
+    flutter: 22
+    flutterSpeed: 11
+    glow: 2.6
+    glowFlicker: 0.18
+    bloom: 0.8
+    fireLight: 2.2
+    fireLightRange: 2.6
+    embers: 16
+    tailFlip: 1
 --- !u!4 &11679196
 Transform:
   m_ObjectHideFlags: 0

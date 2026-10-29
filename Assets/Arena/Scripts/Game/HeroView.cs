@@ -169,6 +169,7 @@ namespace Arena.Game
             else if (animLock > 0) { }
             else if (speed > 30) model.Play(HeroAnim.Run, T.fade, false, Mathf.Clamp(speed / T.runRef, 0.6f, 1.8f));
             else model.Play(HeroAnim.Idle, T.fade);
+            model.SetHeat(p.FireT > 0 ? 2.6f : 1); // the super-kick wind-up flares the fire
             model.Tick(dt);
             prevKickCd = p.KickCd; prevCharge = p.Charging ? p.Charge : 0; prevLob = p.Lobbing ? p.LobCharge : 0; prevFireT = p.FireT;
         }

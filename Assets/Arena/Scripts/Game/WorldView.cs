@@ -49,7 +49,20 @@ namespace Arena.Game
             RenderSettings.ambientSkyColor = Mat.Hex("#4a6a78"); RenderSettings.ambientEquatorColor = Mat.Hex("#24443f"); RenderSettings.ambientGroundColor = Mat.Hex("#0b2a24");
             RenderSettings.fog = true; RenderSettings.fogMode = FogMode.Linear; RenderSettings.fogColor = Mat.Night;
             RenderSettings.fogStartDistance = 30; RenderSettings.fogEndDistance = 60;
+
+            // bloom: glowing fire and lava (emission brighter than 1) gets a soft halo
+            var vgo = new GameObject("PostFx"); vgo.transform.SetParent(root, false);
+            var vol = vgo.AddComponent<UnityEngine.Rendering.Volume>();
+            vol.isGlobal = true; vol.priority = 10;
+            var profile = ScriptableObject.CreateInstance<UnityEngine.Rendering.VolumeProfile>();
+            bloom = profile.Add<UnityEngine.Rendering.Universal.Bloom>(true);
+            bloom.threshold.Override(1.05f); bloom.scatter.Override(0.65f); bloom.intensity.Override(0.8f);
+            bloom.tint.Override(new Color(1f, 0.85f, 0.7f));
+            vol.sharedProfile = profile;
         }
+
+        UnityEngine.Rendering.Universal.Bloom bloom;
+        public void SetBloom(float intensity) { if (bloom != null) bloom.intensity.value = intensity; }
 
         void BuildPitch()
         {

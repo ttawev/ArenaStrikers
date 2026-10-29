@@ -34,6 +34,7 @@ namespace Arena.Sim
         [Range(600, 2600)] public float hookSpd = 1500;
         [Tooltip("Оглушение после притягивания, с")] [Range(0, 1.5f)] public float hookStun = 0.5f;
         [Range(1, 12)] public float hookCd = 5;
+        [Tooltip("Радиус захвата крюком: насколько близко к наконечнику должен пройти мяч или соперник")] [Range(5, 60)] public float hookGrab = 26;
 
         [Header("Жар — огненный суперудар")]
         [Tooltip("Замах, с")] [Range(0.1f, 1.2f)] public float fireDelay = 0.4f;

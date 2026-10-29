@@ -156,10 +156,11 @@ namespace Arena.Sim
                 var o = h.Owner;
                 if (!h.Back)
                 {
-                    float s = T.hookSpd * dt; h.X += h.Dx * s; h.Y += h.Dy * s; h.Dist += s;
+                    float s = T.hookSpd * dt, px = h.X, py = h.Y; h.X += h.Dx * s; h.Y += h.Dy * s; h.Dist += s;
+                    // swept test: everything the hook head passed this tick counts, not only where it ended up
                     SimPlayer v = null;
-                    foreach (var q in Enemies(o)) if (M.Len(q.X - h.X, q.Y - h.Y) < R + 8) { v = q; break; }
-                    if ((b.Owner == null || b.Owner.Team != o.Team) && b.Hook == null && b.Z < HEAD && M.Len(b.X - h.X, b.Y - h.Y) < BR + 11)
+                    foreach (var q in Enemies(o)) if (M.SegDist(q.X, q.Y, px, py, h.X, h.Y) < R + T.hookGrab * 0.5f) { v = q; break; }
+                    if ((b.Owner == null || b.Owner.Team != o.Team) && b.Hook == null && b.Z < HEAD && M.SegDist(b.X, b.Y, px, py, h.X, h.Y) < BR + T.hookGrab)
                     {
                         b.Vz = 0;
                         if (b.Owner != null) ReleaseBall(b.Owner, 0.6f);

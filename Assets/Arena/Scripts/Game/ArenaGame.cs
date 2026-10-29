@@ -55,6 +55,8 @@ namespace Arena.Game
             heroSel = PlayerPrefs.GetInt("arena.hero", 0); modeSel = PlayerPrefs.GetInt("arena.mode", 2); diffSel = PlayerPrefs.GetInt("arena.diff", 1);
             cam = Camera.main;
             if (cam == null) { var go = new GameObject("Main Camera") { tag = "MainCamera" }; cam = go.AddComponent<Camera>(); go.AddComponent<AudioListener>(); }
+            UnityEngine.Rendering.Universal.CameraExtensions.GetUniversalAdditionalCameraData(cam).renderPostProcessing = true; // bloom
+            cam.allowHDR = true;
             cam.clearFlags = CameraClearFlags.SolidColor; cam.backgroundColor = Mat.Night; cam.nearClipPlane = 0.1f; cam.farClipPlane = 120;
             view = new WorldView(transform);
             audioSrc = gameObject.AddComponent<AudioSource>(); audioSrc.playOnAwake = false; audioSrc.spatialBlend = 0;
@@ -97,6 +99,7 @@ namespace Arena.Game
             input.UpdateRumble(dt);
             denyFlash = Mathf.Max(0, denyFlash - dt);
             HeroModel.Tune = heroArt;
+            view.SetBloom(heroArt.bloom);
             HeroModel.FrameDt = state == State.Paused || hitstop > 0 ? 0 : dt;
             view.Sync(match, Time.time, dt, state == State.Playing ? lastCmd : default);
             UpdateCamera(dt);
