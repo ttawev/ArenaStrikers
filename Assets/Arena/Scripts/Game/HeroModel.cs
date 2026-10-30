@@ -41,6 +41,8 @@ namespace Arena.Game
         [Tooltip("Частота трепыхания")] [Range(2, 25)] public float flutterSpeed = 11;
         [Header("Огонь и свечение")]
         [Tooltip("Яркость светящихся частей (пламя, трещины лавы). Больше 1 — начинает сиять (bloom)")] [Range(0, 6)] public float glow = 2.6f;
+        [Tooltip("Жар: яркость свечения во время суперудара (замах и пока мяч горит). Обычная яркость — «glow» выше")] [Range(0, 12)] public float glowSuper = 5f;
+        [Tooltip("Жар: как быстро свечение разгорается и гаснет при суперударе (больше — резче)")] [Range(1, 20)] public float glowRamp = 5f;
         [Tooltip("Мерцание свечения")] [Range(0, 0.6f)] public float glowFlicker = 0.18f;
         [Tooltip("Сила ореола вокруг ярких мест на всём экране")] [Range(0, 3)] public float bloom = 0.8f;
         [Tooltip("Яркость огненного света от героя на землю и плечи")] [Range(0, 6)] public float fireLight = 2.2f;
@@ -424,14 +426,15 @@ namespace Arena.Game
         void TickFx(float dt)
         {
             var T = Tune;
-            heatShown = Mathf.MoveTowards(heatShown, heat, dt * 6);
+            heatShown = Mathf.MoveTowards(heatShown, heat, dt * T.glowRamp * (heat > heatShown ? 1.6f : 0.6f)); // вспыхивает быстро, гаснет плавно
             flickT += dt;
             float flick = 1 + T.glowFlicker * (Mathf.PerlinNoise(flickT * 7, 0.3f) - 0.5f) * 2;
             if (glows && skinR != null)
             {
                 if (mpb == null) mpb = new MaterialPropertyBlock();
                 skinR.GetPropertyBlock(mpb);
-                mpb.SetColor("_EmissionColor", Color.white * (T.glow * flick * heatShown));
+                float hk = Mathf.Clamp01((heatShown - 1) / 1.6f); // 0 — обычное состояние, 1 — суперудар
+                mpb.SetColor("_EmissionColor", Color.white * (Mathf.Lerp(T.glow, T.glowSuper, hk) * flick));
                 skinR.SetPropertyBlock(mpb);
             }
             if (fireLight != null)

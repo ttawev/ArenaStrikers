@@ -96,7 +96,9 @@ namespace Arena.Game
 
         public static Color Hex(string hex) => ColorUtility.TryParseHtmlString(hex, out var c) ? c : Color.magenta;
 
-        public static readonly Color Home = Hex("#ffb21e"), Away = Hex("#ff4f72"), Chalk = Hex("#d9efe6"), Night = Hex("#08151a");
+        public static readonly Color Accent = Hex("#ffb21e"); // жёлто-оранжевый акцент интерфейса (кнопки, заголовок)
+        // хозяева — синие (раньше были жёлтыми)
+        public static readonly Color Home = Hex("#2e7dff"), Away = Hex("#ff4f72"), Chalk = Hex("#d9efe6"), Night = Hex("#0a1026");
         public static readonly Color Fire = Hex("#ff8a1e"), FireYellow = Hex("#ffd23e"), Blink = Hex("#8fd8ff"), Spin = Hex("#7fe8d0"), Mist = Hex("#e6f8f0"), Dust = Hex("#cfe8d8");
 
         public static Color Of(FxColor c)

@@ -229,12 +229,10 @@ namespace Arena.Game
         {
             bool training = match.Mode == GameMode.Training;
             string score = training ? "Голы: " + match.ScoreHome : (match.Mode == GameMode.OneVsOne ? "Ты " : "Мы ") + match.ScoreHome + " : " + match.ScoreAway + (match.Mode == GameMode.OneVsOne ? " Бот" : " Они");
-            Shadowed(new Rect(0, 12, w, 40), score, mid, Color.white);
-            if (!training)
-            {
-                int c = Mathf.CeilToInt(match.Clock);
-                Shadowed(new Rect(0, 46, w, 30), (c / 60) + ":" + (c % 60).ToString("00"), small.Center(), new Color(0.75f, 0.85f, 0.82f));
-            }
+            // счёт и время крупно показывает табло на стадионе; здесь — маленькая подсказка в углу,
+            // на случай когда табло за краем кадра (камера у ближнего борта)
+            if (!training) { int c = Mathf.CeilToInt(match.Clock); score += "   " + (c / 60) + ":" + (c % 60).ToString("00"); }
+            Shadowed(new Rect(16, 10, w * 0.4f, 30), score, small, new Color(0.85f, 0.92f, 0.9f));
             if (match.Freeze > 0 && state == State.Playing)
             {
                 string text = match.Banner != "" ? match.Banner : "ВПЕРЁД";
@@ -294,7 +292,7 @@ namespace Arena.Game
             if (denyFlash > 0) heroCol = Mat.Away;
 
             // A — kick (fill = charge while held), X — lob, B — dash, Y — hero ability
-            ActionButton(cx, cy + gap, size, pad ? "A" : "J", "Удар", you.Charging ? you.Charge : (you.KickCd > 0 ? 0.6f : 1), Mat.Home, you.Charging);
+            ActionButton(cx, cy + gap, size, pad ? "A" : "J", "Удар", you.Charging ? you.Charge : (you.KickCd > 0 ? 0.6f : 1), Mat.Accent, you.Charging);
             ActionButton(cx - gap, cy, size, pad ? "X" : "L", "Навес", you.Lobbing ? you.LobCharge : 1, Mat.Hex("#c8ef7a"), you.Lobbing);
             ActionButton(cx + gap, cy, size, pad ? "B" : "K", "Рывок", 1 - you.DashCd / T.dashCd, Mat.Chalk, you.DashT > 0);
             switch (you.Hero)
@@ -321,7 +319,7 @@ namespace Arena.Game
         void Bar(ref float y, float x, string label, float k)
         {
             k = Mathf.Clamp01(k);
-            Color full = denyFlash > 0 ? Mat.Away : Mat.Home;
+            Color full = denyFlash > 0 ? Mat.Away : Mat.Accent;
             GUI.Label(new Rect(x, y, 200, 22), label, small);
             GUI.color = new Color(1, 1, 1, 0.15f); GUI.DrawTexture(new Rect(x + 150, y + 6, 160, 10), Texture2D.whiteTexture);
             GUI.color = k >= 1 ? full : new Color(0.6f, 0.7f, 0.68f); GUI.DrawTexture(new Rect(x + 150, y + 6, 160 * k, 10), Texture2D.whiteTexture);
@@ -340,7 +338,7 @@ namespace Arena.Game
         {
             GUI.color = new Color(0, 0, 0, 0.55f); GUI.DrawTexture(new Rect(0, 0, w, h), Texture2D.whiteTexture); GUI.color = Color.white;
             float cw = Mathf.Min(720, w - 40), x = (w - cw) / 2, y = Mathf.Max(30, h * 0.12f);
-            Shadowed(new Rect(0, y, w, 60), "АРЕНА СТРАЙКЕРОВ", big, Mat.Home); y += 70;
+            Shadowed(new Rect(0, y, w, 60), "АРЕНА СТРАЙКЕРОВ", big, Mat.Accent); y += 70;
             Shadowed(new Rect(0, y, w, 24), "серая коробка · этап 1", small.Center(), new Color(0.6f, 0.7f, 0.68f)); y += 44;
 
             GUI.Label(new Rect(x, y, cw, 24), "Герой  (крестовина ← →)", small); y += 26;
@@ -366,7 +364,7 @@ namespace Arena.Game
         static bool Toggle(Rect r, bool on, string text)
         {
             var old = GUI.backgroundColor;
-            GUI.backgroundColor = on ? Mat.Home : new Color(0.3f, 0.4f, 0.4f);
+            GUI.backgroundColor = on ? Mat.Accent : new Color(0.3f, 0.4f, 0.4f);
             bool clicked = GUI.Button(r, text, new GUIStyle(GUI.skin.button) { wordWrap = true, fontSize = 13 });
             GUI.backgroundColor = old;
             return clicked;

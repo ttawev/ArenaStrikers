@@ -42,13 +42,13 @@ namespace Arena.Game
         {
             var sun = new GameObject("Floodlight").AddComponent<Light>();
             sun.transform.SetParent(root, false);
-            sun.type = LightType.Directional; sun.color = Mat.Hex("#fff1d8"); sun.intensity = 1.25f;
+            sun.type = LightType.Directional; sun.color = Mat.Hex("#b8c8ff"); sun.intensity = 0.75f; // ночь: холодный «лунный» свет, тёплые пятна дают прожекторы
             sun.shadows = LightShadows.Soft; sun.shadowStrength = 0.75f;
             sun.transform.rotation = Quaternion.Euler(58, -30, 0);
             RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Trilight;
-            RenderSettings.ambientSkyColor = Mat.Hex("#4a6a78"); RenderSettings.ambientEquatorColor = Mat.Hex("#24443f"); RenderSettings.ambientGroundColor = Mat.Hex("#0b2a24");
-            RenderSettings.fog = true; RenderSettings.fogMode = FogMode.Linear; RenderSettings.fogColor = Mat.Night;
-            RenderSettings.fogStartDistance = 30; RenderSettings.fogEndDistance = 60;
+            RenderSettings.ambientSkyColor = Mat.Hex("#34446e"); RenderSettings.ambientEquatorColor = Mat.Hex("#1a2340"); RenderSettings.ambientGroundColor = Mat.Hex("#0a0e1c"); // ночная синева
+            RenderSettings.fog = true; RenderSettings.fogMode = FogMode.Linear; RenderSettings.fogColor = Mat.Hex("#0a1026");
+            RenderSettings.fogStartDistance = 22; RenderSettings.fogEndDistance = 50;
 
             // bloom: glowing fire and lava (emission brighter than 1) gets a soft halo
             var vgo = new GameObject("PostFx"); vgo.transform.SetParent(root, false);
@@ -58,6 +58,13 @@ namespace Arena.Game
             bloom = profile.Add<UnityEngine.Rendering.Universal.Bloom>(true);
             bloom.threshold.Override(1.05f); bloom.scatter.Override(0.65f); bloom.intensity.Override(0.8f);
             bloom.tint.Override(new Color(1f, 0.85f, 0.7f));
+            // ночная атмосфера: затемнение по краям кадра, чуть больше контраста, прохладные тени и тёплый свет
+            var vig = profile.Add<UnityEngine.Rendering.Universal.Vignette>(true);
+            vig.intensity.Override(0.3f); vig.smoothness.Override(0.55f); vig.color.Override(new Color(0.01f, 0.03f, 0.06f));
+            var ca = profile.Add<UnityEngine.Rendering.Universal.ColorAdjustments>(true);
+            ca.contrast.Override(14f); ca.saturation.Override(6f); ca.postExposure.Override(0.4f);
+            var smh = profile.Add<UnityEngine.Rendering.Universal.ShadowsMidtonesHighlights>(true);
+            smh.shadows.Override(new Vector4(0.86f, 0.95f, 1.12f, -0.04f)); smh.highlights.Override(new Vector4(1.06f, 1.0f, 0.92f, 0f));
             vol.sharedProfile = profile;
         }
 
@@ -67,14 +74,32 @@ namespace Arena.Game
         void BuildPitch()
         {
             // the pitch is painted into a texture, exactly like the prototype's canvas
-            const int TW = 1200, TH = 750; // texture width runs along the field length
+            const int TW = 1600, TH = 1000; // texture width runs along the field length
             var px = new Color32[TW * TH];
-            Color32 a = Mat.Hex("#1c5d4a"), b = Mat.Hex("#174f40");
+            // газон: полосы покоса вдоль и (слабее) поперёк, пятна травы разного оттенка, вытоптано у ворот и в центре
+            Color a = Mat.Hex("#3c9a3a"), b = Mat.Hex("#318a31"), worn = Mat.Hex("#6f8f45"); // сочный зелёный, как на референсе
             for (int i = 0; i < TW; i++)
             {
+                float fy = (1 - i / (float)TW) * FH; // где это вдоль поля
                 int stripe = (int)(i / (TW / 12f));
-                var c = stripe % 2 == 0 ? a : b;
-                for (int j = 0; j < TH; j++) px[j * TW + i] = c;
+                for (int j = 0; j < TH; j++)
+                {
+                    float fx = (1 - j / (float)TH) * FW;
+                    var c = stripe % 2 == 0 ? a : b;
+                    if (((int)(j / (TH / 8f))) % 2 == 0) c *= 1.035f;                        // клетка покоса
+                    float n = Mathf.PerlinNoise(i * 0.035f, j * 0.035f) * 0.6f + Mathf.PerlinNoise(i * 0.22f + 31, j * 0.22f + 17) * 0.4f;
+                    c *= 0.9f + 0.18f * n;                                                    // неровный оттенок
+                    float wear = 0;                                                           // вытоптанные места
+                    { float dx = (fx - FW / 2) / 260, dy = Mathf.Min(fy, FH - fy) / 170; wear = Mathf.Exp(-(dx * dx + dy * dy)) * 0.55f; } // у ближайших ворот
+                    { float dx = (fx - FW / 2) / 200, dy = (fy - FH / 2) / 200; wear = Mathf.Max(wear, Mathf.Exp(-(dx * dx + dy * dy)) * 0.25f); }
+                    wear *= 0.6f + 0.8f * Mathf.PerlinNoise(i * 0.09f + 5, j * 0.09f + 9);
+                    c = Color.Lerp(c, worn, Mathf.Clamp01(wear));
+                    float edge = Mathf.Min(Mathf.Min(fx, FW - fx), Mathf.Min(fy, FH - fy));    // у бортов чуть темнее (тень от бортов)
+                    c *= 0.88f + 0.12f * Mathf.Clamp01(edge / 60);
+                    { float rx = (fx - FW / 2) / (FW / 2), ry = (fy - FH / 2) / (FH / 2); c *= 1.06f - 0.2f * Mathf.Clamp01((rx * rx + ry * ry) * 0.5f); } // середина поля светлее, к краям темнее
+                    c.a = 1;
+                    px[j * TW + i] = c;
+                }
             }
             Color32 chalk = new Color32(230, 248, 240, 220);
             void Dot(float x, float y, float r, Color32 col)
@@ -110,7 +135,8 @@ namespace Arena.Game
             var mat = new Material(Mat.Solid(Color.white)); mat.SetTexture("_BaseMap", tex); mat.SetFloat("_Smoothness", 0.05f);
             var pitch = Shapes.Prim(PrimitiveType.Quad, root, Vector3.zero, new Vector3(FH * S, FW * S, 1), mat, "Pitch");
             pitch.transform.localRotation = Quaternion.Euler(90, 0, 0);
-            var ground = Shapes.Prim(PrimitiveType.Quad, root, new Vector3(0, -0.005f, 0), new Vector3(70, 60, 1), Mat.Solid(Mat.Hex("#0c2422")), "Ground");
+            var gmat = new Material(Mat.Solid(Color.white, 0.05f)); gmat.SetTexture("_BaseMap", GravelTexture()); gmat.SetTextureScale("_BaseMap", new Vector2(35, 30));
+            var ground = Shapes.Prim(PrimitiveType.Quad, root, new Vector3(0, -0.005f, 0), new Vector3(70, 60, 1), gmat, "Ground"); // тёмный гравий вокруг поля
             ground.transform.localRotation = Quaternion.Euler(90, 0, 0);
         }
 
@@ -126,36 +152,69 @@ namespace Arena.Game
             Box(-BT / 2, FH / 2, BT, FH + BT * 2, BH, side, "BoardL"); Box(FW + BT / 2, FH / 2, BT, FH + BT * 2, BH, side, "BoardR");
             float ew = GX1;
             Box(ew / 2, -BT / 2, ew, BT, BH, Mat.Solid(Mat.Hex("#8a2c42")), "BoardTopA"); Box(FW - ew / 2, -BT / 2, ew, BT, BH, Mat.Solid(Mat.Hex("#8a2c42")), "BoardTopB");
-            Box(ew / 2, FH + BT / 2, ew, BT, BH, Mat.Solid(Mat.Hex("#8a6316")), "BoardBotA"); Box(FW - ew / 2, FH + BT / 2, ew, BT, BH, Mat.Solid(Mat.Hex("#8a6316")), "BoardBotB");
+            Box(ew / 2, FH + BT / 2, ew, BT, BH, Mat.Solid(Mat.Hex("#1d3f8a")), "BoardBotA"); Box(FW - ew / 2, FH + BT / 2, ew, BT, BH, Mat.Solid(Mat.Hex("#1d3f8a")), "BoardBotB");
             Goal(0, -1, Mat.Away); Goal(FH, 1, Mat.Home);
         }
 
         void Goal(float y0, float dir, Color col)
         {
-            var white = Mat.Solid(Mat.Hex("#f1f7f4"), 0.4f);
+            var white = Mat.Solid(Color.Lerp(col, Color.white, 0.15f), 0.4f); // штанги и перекладина — в цвете команды
             foreach (float x in new[] { GX1, GX2 })
                 Shapes.Prim(PrimitiveType.Cylinder, root, W.Pos(x, y0, GOALH / 2), new Vector3(POST * 2 * S, GOALH / 2 * S, POST * 2 * S), white, "Post");
             var bar = Shapes.Prim(PrimitiveType.Cylinder, root, W.Pos(FW / 2, y0, GOALH), new Vector3(POST * 2 * S, (GOAL + POST * 2) / 2 * S, POST * 2 * S), white, "Crossbar");
             bar.transform.rotation = Quaternion.Euler(90, 0, 0); // field x runs along world z
-            var net = Mat.Clear(new Color(col.r, col.g, col.b, 0.28f));
+            // сетка: полупрозрачная ячейка ~8 см, плитка подгоняется под размер каждой стенки
+            Material Net(float u, float v)
+            {
+                var m = Mat.Clear(new Color(Mathf.Lerp(col.r, 1, 0.5f), Mathf.Lerp(col.g, 1, 0.5f), Mathf.Lerp(col.b, 1, 0.5f), 0.75f));
+                m.SetTexture("_BaseMap", NetTexture()); m.SetTextureScale("_BaseMap", new Vector2(u / 8, v / 8));
+                return m;
+            }
             float yb = y0 + dir * NET;
-            Box(FW / 2, yb, GOAL, 2, GOALH, net, "NetBack");
-            Box(GX1, y0 + dir * NET / 2, 2, NET, GOALH, net, "NetSideA"); Box(GX2, y0 + dir * NET / 2, 2, NET, GOALH, net, "NetSideB");
-            Box(FW / 2, y0 + dir * NET / 2, GOAL, NET, 2, net, "NetTop").transform.position += new Vector3(0, (GOALH - 1) * S, 0);
+            Box(FW / 2, yb, GOAL, 2, GOALH, Net(GOAL, GOALH), "NetBack");
+            Box(GX1, y0 + dir * NET / 2, 2, NET, GOALH, Net(NET, GOALH), "NetSideA"); Box(GX2, y0 + dir * NET / 2, 2, NET, GOALH, Net(NET, GOALH), "NetSideB");
+            Box(FW / 2, y0 + dir * NET / 2, GOAL, NET, 2, Net(GOAL, NET), "NetTop").transform.position += new Vector3(0, (GOALH - 1) * S, 0);
+            // лёгкая тень сетки на траве
+            var tint = Mat.Clear(new Color(col.r, col.g, col.b, 0.12f));
+            Box(FW / 2, y0 + dir * NET / 2, GOAL, NET, 0.4f, tint, "NetFloor");
         }
 
-        void BuildStands()
-        {
-            string[] cols = { "#12302f", "#153836", "#19403d", "#1c4744" };
-            for (int i = 0; i < 4; i++)
+        StadiumView stadium; // трибуны со зрителями, прожекторы, реклама, табло — Game/StadiumView.cs
+        static Texture2D gravelTex;
+        static Texture2D GravelTexture()
+        {   // тёмный сине-серый гравий
+            if (gravelTex != null) return gravelTex;
+            const int N = 128; gravelTex = new Texture2D(N, N, TextureFormat.RGBA32, true) { name = "gravel", wrapMode = TextureWrapMode.Repeat };
+            var p = new Color32[N * N]; var r = new System.Random(3);
+            for (int i = 0; i < p.Length; i++)
             {
-                float gap = 40 + i * 46, h = 22 + i * 26, dep = 46; var m = Mat.Solid(Mat.Hex(cols[i]));
-                Box(-gap - dep / 2, FH / 2, dep, FH + 2 * (gap + dep), h, m, "Stand");
-                Box(FW + gap + dep / 2, FH / 2, dep, FH + 2 * (gap + dep), h, m, "Stand");
-                Box(FW / 2, -NET - gap - dep / 2, FW + 2 * gap, dep, h, m, "Stand");
-                Box(FW / 2, FH + NET + gap + dep / 2, FW + 2 * gap, dep, h, m, "Stand");
+                float v = 0.09f + 0.07f * (float)r.NextDouble(); if (r.NextDouble() < 0.08) v += 0.12f;
+                p[i] = new Color(v * 0.85f, v * 0.9f, v * 1.15f, 1);
             }
+            gravelTex.SetPixels32(p); gravelTex.Apply(true);
+            return gravelTex;
         }
+
+        static Texture2D netTex;
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void ResetNet() { netTex = null; gravelTex = null; }
+        static Texture2D NetTexture()
+        {   // одна ячейка сетки: светлые нити по краям, прозрачная середина (текстура повторяется)
+            if (netTex != null) return netTex;
+            const int N = 32; netTex = new Texture2D(N, N, TextureFormat.RGBA32, true) { name = "goalNet", wrapMode = TextureWrapMode.Repeat };
+            var p = new Color32[N * N];
+            for (int y = 0; y < N; y++)
+                for (int x = 0; x < N; x++)
+                {
+                    int dx = Mathf.Min(x, N - 1 - x), dy = Mathf.Min(y, N - 1 - y);
+                    float a = Mathf.Clamp01(1.6f - Mathf.Min(dx, dy) * 0.8f);
+                    p[y * N + x] = new Color32(255, 255, 255, (byte)(255 * a));
+                }
+            netTex.SetPixels32(p); netTex.Apply(true);
+            return netTex;
+        }
+
+        void BuildStands() => stadium = new StadiumView(root);
 
         // ---------- ball and effects ----------
         void BuildBall()
@@ -214,13 +273,25 @@ namespace Arena.Game
             sparks = MakeParticles("Sparks", false, 0.35f);
             flames = MakeParticles("Flames", true, -0.15f);
             smoke = MakeSmoke();
+            abilityFx = new AbilityFx(root);
         }
+
+        AbilityFx abilityFx; // порталы Мига, перья Вихря, вода Багора, пыль рывка, волна сильного удара
 
         // ---------- ninja smoke (Тень vanishes / reappears) ----------
         ParticleSystem smoke;
         bool[] wasInvisible = new bool[0];
 
-        static Texture2D CloudTexture()
+        static Texture2D cloudTex;
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void ResetCloud() { cloudTex = null; }
+        internal static Texture2D CloudTexture()
+        {
+            if (cloudTex == null) cloudTex = MakeCloudTexture();
+            return cloudTex;
+        }
+
+        static Texture2D MakeCloudTexture()
         {   // a soft lumpy puff: radial falloff broken up by noise
             const int N = 64; var t = new Texture2D(N, N, TextureFormat.RGBA32, true) { name = "smokePuff", wrapMode = TextureWrapMode.Clamp };
             var px = new Color32[N * N];
@@ -382,6 +453,7 @@ namespace Arena.Game
         {
             EnsureHeroes(m);
             SyncWalls(m, t);
+            stadium.Sync(m, t, dt);
             for (int i = 0; i < m.Players.Count; i++) heroes[i].Sync(m, m.Players[i], t, m.Mode != GameMode.OneVsOne && m.Mode != GameMode.Training && i == 0);
             if (wasInvisible.Length != m.Players.Count) wasInvisible = new bool[m.Players.Count];
             for (int i = 0; i < m.Players.Count; i++)
@@ -390,6 +462,7 @@ namespace Arena.Game
                 if (p.Invisible != wasInvisible[i]) SmokePoof(p.X, p.Y, p.Invisible ? 1f : 0.6f);
                 wasInvisible[i] = p.Invisible;
             }
+            abilityFx.Sync(m, t, dt);
 
             var b = m.Ball;
             ball.position = W.Pos(b.X, b.Y, BR + b.Z);

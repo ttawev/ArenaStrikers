@@ -146,7 +146,7 @@ namespace Arena.Game
             body.gameObject.SetActive(grey); legL.gameObject.SetActive(grey); legR.gameObject.SetActive(grey);
         }
 
-        void DriveModel(SimPlayer p)
+        void DriveModel(SimPlayer p, SimBall ball)
         {
             var T = HeroModel.Tune; float dt = HeroModel.FrameDt;
             float speed = new Vector2(p.Vx, p.Vy).magnitude;
@@ -169,7 +169,8 @@ namespace Arena.Game
             else if (animLock > 0) { }
             else if (speed > 30) model.Play(HeroAnim.Run, T.fade, false, Mathf.Clamp(speed / T.runRef, 0.6f, 1.8f));
             else model.Play(HeroAnim.Idle, T.fade);
-            model.SetHeat(p.FireT > 0 ? 2.6f : 1); // the super-kick wind-up flares the fire
+            bool superKick = p.FireT > 0 || (ball.Fire > 0 && ball.FireBy == p); // замах суперудара и пока его мяч горит
+            model.SetHeat(superKick ? 2.6f : 1); // the super-kick flares the fire
             model.Tick(dt);
             prevKickCd = p.KickCd; prevCharge = p.Charging ? p.Charge : 0; prevLob = p.Lobbing ? p.LobCharge : 0; prevFireT = p.FireT;
         }
@@ -204,7 +205,7 @@ namespace Arena.Game
             float wobble = p.Stun > 0 ? Mathf.Sin(t * 11) * 0.28f : 0;
             body.localRotation = Quaternion.Euler(lean * Mathf.Rad2Deg, 0, wobble * Mathf.Rad2Deg);
 
-            if (model != null) DriveModel(p);
+            if (model != null) DriveModel(p, m.Ball);
 
             stars.gameObject.SetActive(p.Stun > 0);
             if (p.Stun > 0)
