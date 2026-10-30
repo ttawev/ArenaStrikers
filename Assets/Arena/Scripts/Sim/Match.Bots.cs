@@ -169,7 +169,9 @@ namespace Arena.Sim
             }
             else if (chase)
             {
-                if (threat) { tx = M.Clamp(ball.X, GX1 + 10, GX2 - 10); ty = M.Clamp(ball.Y - fwd * 60, R + 6, FH - R - 6); }
+                // мяч катится к нашим воротам, а я позади него: бежать «на его место у ворот» значит пройти сквозь мяч
+                // и толкнуть его в свои ворота. Догоняем по ходу мяча и принимаем (скорости близки — мяч ловится, а не отскакивает).
+                if (threat) { tx = myI.x; ty = myI.y; }
                 else if (foeHas)
                 {
                     var o = ball.Owner; tx = ball.X + o.Fx * 8; ty = ball.Y + o.Fy * 8;
@@ -231,7 +233,10 @@ namespace Arena.Sim
                 UseHook(b, a.x, a.y);
             }
             else if (b.Hero == Hero.Teleport && b.TpCd <= 0 && b.TpBackT <= 0 && ball.Owner == null && dBall > T.tpDist + 80 && (v.x * b.Fx + v.y * b.Fy) > 0.93f && Rand() < D.Abil * 0.25f) UseTp(b);
-            if (b.DashCd <= 0 && dBall > 55 && dBall < 220 && (foeHas || threat) && Rand() < D.Dash * 0.35f) TryDash(b, ball.X - b.X, ball.Y - b.Y);
+            // рывок в сторону своих ворот сбивает мяч туда же (на рывке мяч отскакивает, а не ловится) — у своих ворот так не делаем
+            var toBall = M.Norm(ball.X - b.X, ball.Y - b.Y);
+            bool towardOwnGoal = toBall.y * -fwd > 0.3f && Dep(ball.Y) < FH * 0.45f;
+            if (b.DashCd <= 0 && dBall > 55 && dBall < 220 && (foeHas || threat) && !towardOwnGoal && Rand() < D.Dash * 0.35f) TryDash(b, ball.X - b.X, ball.Y - b.Y);
         }
     }
 }

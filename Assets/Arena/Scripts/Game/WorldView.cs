@@ -213,6 +213,82 @@ namespace Arena.Game
         {
             sparks = MakeParticles("Sparks", false, 0.35f);
             flames = MakeParticles("Flames", true, -0.15f);
+            smoke = MakeSmoke();
+        }
+
+        // ---------- ninja smoke (Тень vanishes / reappears) ----------
+        ParticleSystem smoke;
+        bool[] wasInvisible = new bool[0];
+
+        static Texture2D CloudTexture()
+        {   // a soft lumpy puff: radial falloff broken up by noise
+            const int N = 64; var t = new Texture2D(N, N, TextureFormat.RGBA32, true) { name = "smokePuff", wrapMode = TextureWrapMode.Clamp };
+            var px = new Color32[N * N];
+            for (int y = 0; y < N; y++)
+                for (int x = 0; x < N; x++)
+                {
+                    float dx = (x - N / 2f + 0.5f) / (N / 2f), dy = (y - N / 2f + 0.5f) / (N / 2f);
+                    float d = Mathf.Sqrt(dx * dx + dy * dy);
+                    float n = Mathf.PerlinNoise(x * 0.11f, y * 0.11f) * 0.6f + Mathf.PerlinNoise(x * 0.27f + 7, y * 0.27f + 3) * 0.4f;
+                    float a = Mathf.Clamp01((1 - d) * 1.6f) * Mathf.Clamp01(0.35f + n);
+                    byte shade = (byte)(200 + 55 * n);
+                    px[y * N + x] = new Color32(shade, shade, shade, (byte)(255 * a * a));
+                }
+            t.SetPixels32(px); t.Apply(true);
+            return t;
+        }
+
+        ParticleSystem MakeSmoke()
+        {
+            var go = new GameObject("NinjaSmoke"); go.transform.SetParent(root, false);
+            var ps = go.AddComponent<ParticleSystem>();
+            ps.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+            var main = ps.main; main.simulationSpace = ParticleSystemSimulationSpace.World; main.playOnAwake = false; main.loop = true;
+            main.maxParticles = 600; main.gravityModifier = -0.04f;
+            main.startRotation = new ParticleSystem.MinMaxCurve(0, Mathf.PI * 2);
+            var em = ps.emission; em.enabled = false;
+            var sh = ps.shape; sh.enabled = false;
+            var lim = ps.limitVelocityOverLifetime; lim.enabled = true; lim.limit = 0.15f; lim.dampen = 0.12f; // the puff bursts out, then hangs
+            var rot = ps.rotationOverLifetime; rot.enabled = true; rot.z = new ParticleSystem.MinMaxCurve(-1.2f, 1.2f);
+            var col = ps.colorOverLifetime; col.enabled = true;
+            var g = new Gradient();
+            g.SetKeys(new[] { new GradientColorKey(new Color(0.85f, 0.82f, 0.95f), 0), new GradientColorKey(new Color(0.42f, 0.38f, 0.52f), 1) },
+                      new[] { new GradientAlphaKey(0.95f, 0), new GradientAlphaKey(0.8f, 0.35f), new GradientAlphaKey(0, 1) });
+            col.color = g;
+            var size = ps.sizeOverLifetime; size.enabled = true;
+            size.size = new ParticleSystem.MinMaxCurve(1, new AnimationCurve(new Keyframe(0, 0.45f), new Keyframe(0.25f, 1f), new Keyframe(1, 1.5f)));
+            var r = ps.GetComponent<ParticleSystemRenderer>();
+            var m = Mat.ParticleMat(false); m.SetTexture("_BaseMap", CloudTexture()); r.sharedMaterial = m;
+            r.sortMode = ParticleSystemSortMode.Distance;
+            ps.Play();
+            return ps;
+        }
+
+        /// <summary>A ninja "poof": a ring of smoke bursting out at the feet and a column that hides the body.</summary>
+        public void SmokePoof(float x, float y, float strength)
+        {
+            var e = new ParticleSystem.EmitParams { applyShapeToPosition = false };
+            Vector3 c = W.Pos(x, y, 0);
+            int ring = (int)(22 * strength), column = (int)(14 * strength);
+            for (int i = 0; i < ring; i++)
+            {
+                float a = (i + Random.value * 0.6f) / ring * Mathf.PI * 2, sp = Random.Range(1.2f, 2.6f) * strength;
+                var dir = new Vector3(Mathf.Cos(a), 0, Mathf.Sin(a));
+                e.position = c + dir * 0.15f + Vector3.up * Random.Range(0.05f, 0.3f);
+                e.velocity = dir * sp + Vector3.up * Random.Range(0.1f, 0.5f);
+                e.startSize = Random.Range(0.35f, 0.6f) * strength; e.startLifetime = Random.Range(0.8f, 1.3f);
+                e.rotation = Random.value * 360;
+                smoke.Emit(e, 1);
+            }
+            for (int i = 0; i < column; i++)
+            {
+                float a = Random.value * Mathf.PI * 2;
+                e.position = c + new Vector3(Mathf.Cos(a), 0, Mathf.Sin(a)) * Random.Range(0, 0.25f) + Vector3.up * Random.Range(0.2f, 1.3f);
+                e.velocity = new Vector3(Mathf.Cos(a), 0, Mathf.Sin(a)) * Random.Range(0.2f, 0.7f) + Vector3.up * Random.Range(0.2f, 0.8f);
+                e.startSize = Random.Range(0.5f, 0.85f) * strength; e.startLifetime = Random.Range(0.9f, 1.5f);
+                e.rotation = Random.value * 360;
+                smoke.Emit(e, 1);
+            }
         }
 
         public void Burst(float x, float y, Color c, int n, float spd)
@@ -307,6 +383,13 @@ namespace Arena.Game
             EnsureHeroes(m);
             SyncWalls(m, t);
             for (int i = 0; i < m.Players.Count; i++) heroes[i].Sync(m, m.Players[i], t, m.Mode != GameMode.OneVsOne && m.Mode != GameMode.Training && i == 0);
+            if (wasInvisible.Length != m.Players.Count) wasInvisible = new bool[m.Players.Count];
+            for (int i = 0; i < m.Players.Count; i++)
+            {   // Тень: a big puff when vanishing, a smaller one when reappearing
+                var p = m.Players[i];
+                if (p.Invisible != wasInvisible[i]) SmokePoof(p.X, p.Y, p.Invisible ? 1f : 0.6f);
+                wasInvisible[i] = p.Invisible;
+            }
 
             var b = m.Ball;
             ball.position = W.Pos(b.X, b.Y, BR + b.Z);

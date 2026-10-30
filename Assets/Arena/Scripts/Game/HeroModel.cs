@@ -46,6 +46,8 @@ namespace Arena.Game
         [Tooltip("Яркость огненного света от героя на землю и плечи")] [Range(0, 6)] public float fireLight = 2.2f;
         [Tooltip("Радиус огненного света, м")] [Range(0.5f, 6)] public float fireLightRange = 2.6f;
         [Tooltip("Искр в секунду от пламени")] [Range(0, 60)] public float embers = 16;
+        [Header("Лёд (Стена)")]
+        [Tooltip("Снежинок инея в секунду с каждого плеча")] [Range(0, 40)] public float frost = 7;
         [Tooltip("Развернуть хвост на 180° (если модель в Mixamo поворачивали). Применяется к новому матчу.")] public bool tailFlip = true;
     }
 
@@ -100,7 +102,12 @@ namespace Arena.Game
             new Vector4(0.045f, 0.19f, 0.3f, 0.72f), // Жар: пламя и лава
             Vector4.zero, Vector4.zero, Vector4.zero, // Багор, Миг, Вихрь — пока без свечения
             new Vector4(0.44f, 0.58f, 0.2f, 0.75f),  // Тень: голубые глаза
+            new Vector4(0.48f, 0.555f, 0.12f, 0.8f), // Стена: ледяные кристаллы (шарф и кожа — чуть другой оттенок, не светятся)
         };
+
+        // Форма перекрашивается в цвет команды по белым/серым пикселям. У Мига белый мех (морда, грудь, кончик хвоста),
+        // у Стены бледная кожа — для них форма только холодных серых оттенков (не ниже этого), тёплый мех и голубая кожа остаются.
+        static readonly float[] KitHueMin = { 0, 0, 0.55f, 0, 0, 0.64f };
 
         static Texture2D MakeEmission(Texture2D src, Hero h)
         {
@@ -128,13 +135,14 @@ namespace Arena.Game
         }
 
         /// <summary>White/grey kit pixels (low saturation, bright) are recoloured to the team colour.</summary>
-        static Material MakeMat(Texture2D src, Texture2D normal, Texture2D emission, Team team)
+        static Material MakeMat(Texture2D src, Texture2D normal, Texture2D emission, Team team, Hero h)
         {
             if (src == null) return Mat.Solid(Color.white);
             Texture2D tex = src;
             if (src.isReadable)
             {
                 Color tc = team == Team.Home ? Mat.Home : Mat.Away;
+                float hueMin = (int)h < KitHueMin.Length ? KitHueMin[(int)h] : 0;
                 var px = src.GetPixels32();
                 for (int i = 0; i < px.Length; i++)
                 {
@@ -143,6 +151,14 @@ namespace Arena.Game
                     float v = mx / 255f, s = mx == 0 ? 0 : (mx - mn) / (float)mx;
                     float k = Mathf.Clamp01((0.2f - s) / 0.08f) * Mathf.Clamp01((v - 0.4f) / 0.2f);
                     if (k <= 0) continue;
+                    if (hueMin > 0 && s > 0.02f)
+                    {
+                        int d = mx - mn; float hue;
+                        if (mx == c.r) hue = ((c.g - c.b) / (float)d) / 6f; else if (mx == c.g) hue = ((c.b - c.r) / (float)d + 2) / 6f; else hue = ((c.r - c.g) / (float)d + 4) / 6f;
+                        if (hue < 0) hue += 1;
+                        k *= Mathf.Clamp01((hue - hueMin) / 0.02f) * Mathf.Clamp01((0.2f - s) / 0.08f);
+                        if (k <= 0) continue;
+                    }
                     float l = Mathf.Min(1, v * 1.08f);
                     px[i] = new Color32((byte)Mathf.Lerp(c.r, 255 * tc.r * l, k), (byte)Mathf.Lerp(c.g, 255 * tc.g * l, k), (byte)Mathf.Lerp(c.b, 255 * tc.b * l, k), c.a);
                 }
@@ -210,7 +226,7 @@ namespace Arena.Game
             if (a.Albedo != null)
             {   // textured model (AI-generated): one material, kit recoloured in the texture
                 mat = a.TeamMat[(int)team];
-                if (mat == null) mat = a.TeamMat[(int)team] = MakeMat(a.Albedo, a.Normal, a.Emission, team);
+                if (mat == null) mat = a.TeamMat[(int)team] = MakeMat(a.Albedo, a.Normal, a.Emission, team, h);
                 foreach (var r in Go.GetComponentsInChildren<Renderer>(true)) r.sharedMaterial = mat;
             }
             else
@@ -290,6 +306,7 @@ namespace Arena.Game
             skinR = skin;
             glows = a.Emission != null;
             if (h == Hero.Fire) BuildFireFx(anim);
+            if (h == Hero.Wall) BuildFrostFx(anim);
         }
 
         // ---------- огонь Жара: свет, искры ----------
@@ -340,7 +357,7 @@ namespace Arena.Game
         }
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
-        static void ResetFxStatics() { dot = null; emberMat = null; loggedChains.Clear(); }
+        static void ResetFxStatics() { dot = null; emberMat = null; frostMat = null; loggedChains.Clear(); }
 
         void BuildFireFx(Animator anim)
         {
@@ -354,6 +371,51 @@ namespace Arena.Game
             fireLight.shadows = LightShadows.None; fireLight.renderMode = LightRenderMode.ForcePixel;
             headEmbers = Embers(head, flameTop, 0.12f * k, k);
             if (tails.Count > 0) tailEmbers = Embers(tails[tails.Count - 1], tails[tails.Count - 1].position + Vector3.up * 0.06f * k, 0.04f * k, k * 0.6f);
+        }
+
+        // ---------- иней Стены: с кристаллов на плечах медленно осыпаются голубые искорки ----------
+        static Material frostMat;
+        readonly List<ParticleSystem> frostFx = new List<ParticleSystem>();
+        static ParticleSystem Frost(Transform parent, Vector3 worldPos, float radius, float scale)
+        {
+            var go = new GameObject("frost"); go.transform.SetParent(parent, false); go.transform.position = worldPos;
+            var ps = go.AddComponent<ParticleSystem>();
+            ps.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+            var main = ps.main;
+            main.simulationSpace = ParticleSystemSimulationSpace.World; main.loop = true; main.playOnAwake = false; main.maxParticles = 150;
+            main.startLifetime = new ParticleSystem.MinMaxCurve(0.8f, 1.6f);
+            main.startSpeed = new ParticleSystem.MinMaxCurve(0.02f * scale, 0.12f * scale);
+            main.startSize = new ParticleSystem.MinMaxCurve(0.02f * scale, 0.05f * scale);
+            main.gravityModifier = 0.03f * scale;   // иней падает, а не взлетает, как искры
+            main.startRotation = new ParticleSystem.MinMaxCurve(0, Mathf.PI * 2);
+            main.startColor = new ParticleSystem.MinMaxGradient(new Color(0.85f, 0.97f, 1f), new Color(0.55f, 0.85f, 1f));
+            var sh = ps.shape; sh.enabled = true; sh.shapeType = ParticleSystemShapeType.Sphere; sh.radius = radius;
+            var col = ps.colorOverLifetime; col.enabled = true;
+            var g = new Gradient();
+            g.SetKeys(new[] { new GradientColorKey(Color.white, 0), new GradientColorKey(new Color(0.6f, 0.85f, 1f), 1) },
+                      new[] { new GradientAlphaKey(0, 0), new GradientAlphaKey(0.9f, 0.15f), new GradientAlphaKey(0.6f, 0.6f), new GradientAlphaKey(0, 1) });
+            col.color = g;
+            var size = ps.sizeOverLifetime; size.enabled = true; size.size = new ParticleSystem.MinMaxCurve(1, AnimationCurve.Linear(0, 1, 1, 0.4f));
+            var noise = ps.noise; noise.enabled = true; noise.strength = 0.12f * scale; noise.frequency = 1.5f;
+            if (frostMat == null) { frostMat = Mat.ParticleMat(true); frostMat.SetTexture("_BaseMap", Dot()); frostMat.SetColor("_BaseColor", new Color(1.4f, 1.8f, 2.2f, 1)); }
+            ps.GetComponent<ParticleSystemRenderer>().sharedMaterial = frostMat;
+            ps.Play();
+            return ps;
+        }
+
+        void BuildFrostFx(Animator anim)
+        {
+            if (anim == null || !anim.isHuman) return;
+            float k = Tune.height / 1.35f;
+            foreach (var b in new[] { HumanBodyBones.LeftShoulder, HumanBodyBones.RightShoulder })
+            {
+                var t = anim.GetBoneTransform(b);
+                if (t == null) continue;
+                var arm = anim.GetBoneTransform(b == HumanBodyBones.LeftShoulder ? HumanBodyBones.LeftUpperArm : HumanBodyBones.RightUpperArm);
+                // кристаллы — над плечевым суставом, чуть ближе к шее
+                Vector3 p = (arm != null ? Vector3.Lerp(t.position, arm.position, 0.8f) : t.position) + Vector3.up * 0.18f * k;
+                frostFx.Add(Frost(t, p, 0.12f * k, k));
+            }
         }
 
         /// <summary>1 = normal; more while the fire super-kick winds up.</summary>
@@ -377,6 +439,7 @@ namespace Arena.Game
                 fireLight.intensity = T.fireLight * flick * (0.6f + 0.4f * heatShown);
                 fireLight.range = T.fireLightRange * (0.8f + 0.2f * heatShown);
             }
+            foreach (var f in frostFx) if (f != null) { var em = f.emission; em.rateOverTime = T.frost; }
             if (headEmbers != null) { var em = headEmbers.emission; em.rateOverTime = T.embers * heatShown * heatShown; }
             if (tailEmbers != null) { var em = tailEmbers.emission; em.rateOverTime = T.embers * 0.35f * heatShown; }
         }
