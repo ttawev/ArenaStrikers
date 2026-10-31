@@ -101,7 +101,8 @@ namespace Arena.Game
             for (int i = 0; i < 3; i++) Shapes.Prim(PrimitiveType.Cube, stars, Vector3.zero, V(6, 6, 6), Mat.Glow(Mat.Hex("#fff3c4")), "star");
 
             rope = Shapes.Prim(PrimitiveType.Cube, parent, Vector3.zero, Vector3.one, Mat.Solid(Mat.Hex("#c9a36a")), name + "_rope");
-            hookHead = Shapes.MeshObj(Shapes.Cone(9 * S, 22 * S, 10), parent, Mat.Solid(Mat.Hex("#d9e2e6"), 0.6f), name + "_hook");
+            hookHead = Shapes.MeshObj(HeroModel.HookMetalMesh(0), parent, Mat.Solid(Mat.Hex("#d9e2e6"), 0.8f), name + "_hook"); // тот же крюк, что в руке у Багора
+            hookHead.transform.localScale = Vector3.one * 1.8f;
             tpMark = Shapes.MeshObj(Shapes.Ring((Field.R - 6) * S, (Field.R + 2) * S), parent, Mat.Clear(new Color(0.56f, 0.85f, 1f, 0.8f), true), name + "_tpMark");
             youMark = Shapes.MeshObj(Shapes.Cone(8 * S, 16 * S, 4), Root.transform, Mat.Glow(Mat.Hex("#fff3c4")), "youMark");
             youMark.transform.localRotation = Quaternion.Euler(180, 0, 0);
@@ -146,8 +147,9 @@ namespace Arena.Game
             body.gameObject.SetActive(grey); legL.gameObject.SetActive(grey); legR.gameObject.SetActive(grey);
         }
 
-        void DriveModel(SimPlayer p, SimBall ball)
+        void DriveModel(Match m, SimPlayer p)
         {
+            var ball = m.Ball;
             var T = HeroModel.Tune; float dt = HeroModel.FrameDt;
             float speed = new Vector2(p.Vx, p.Vy).magnitude;
             bool kicked = p.KickCd > prevKickCd + 0.05f;
@@ -171,6 +173,7 @@ namespace Arena.Game
             else model.Play(HeroAnim.Idle, T.fade);
             bool superKick = p.FireT > 0 || (ball.Fire > 0 && ball.FireBy == p); // замах суперудара и пока его мяч горит
             model.SetHeat(superKick ? 2.6f : 1); // the super-kick flares the fire
+            if (p.Hero == Hero.Hook) model.SetHookOut(m.Hooks.Exists(h => h.Owner == p));
             model.Tick(dt);
             prevKickCd = p.KickCd; prevCharge = p.Charging ? p.Charge : 0; prevLob = p.Lobbing ? p.LobCharge : 0; prevFireT = p.FireT;
         }
@@ -205,7 +208,7 @@ namespace Arena.Game
             float wobble = p.Stun > 0 ? Mathf.Sin(t * 11) * 0.28f : 0;
             body.localRotation = Quaternion.Euler(lean * Mathf.Rad2Deg, 0, wobble * Mathf.Rad2Deg);
 
-            if (model != null) DriveModel(p, m.Ball);
+            if (model != null) DriveModel(m, p);
 
             stars.gameObject.SetActive(p.Stun > 0);
             if (p.Stun > 0)
@@ -232,11 +235,13 @@ namespace Arena.Game
             if (hook != null)
             {
                 Vector3 a = W.Pos(p.X + p.Fx * Field.R * 0.8f, p.Y + p.Fy * Field.R * 0.8f, 30), b = W.Pos(hook.X, hook.Y, 30);
+                if (model != null && model.RopeStart != null) a = model.RopeStart.position; // верёвка идёт от древка в руке
                 Vector3 d = b - a; float L = Mathf.Max(0.01f, d.magnitude);
                 rope.SetActive(true); rope.transform.position = (a + b) / 2; rope.transform.localScale = new Vector3(3 * S, 3 * S, L);
                 rope.transform.rotation = Quaternion.LookRotation(d.sqrMagnitude > 0 ? d : Vector3.forward);
                 hookHead.SetActive(true); hookHead.transform.position = b;
-                hookHead.transform.rotation = Quaternion.FromToRotation(Vector3.up, d.sqrMagnitude > 0 ? d.normalized : W.Dir(hook.Dx, hook.Dy));
+                Vector3 hd = d; hd.y = 0; if (hd.sqrMagnitude < 1e-4f) hd = W.Dir(hook.Dx, hook.Dy); // острие всегда от хозяина
+                hookHead.transform.rotation = Quaternion.LookRotation(hd.sqrMagnitude > 0 ? hd : Vector3.forward, Vector3.up);
             }
             else { rope.SetActive(false); hookHead.SetActive(false); }
 

@@ -25,6 +25,8 @@ namespace Arena.Sim
         public string Banner = "";      // "ГОЛ!", "ПРОПУСТИЛ", "АВТОГОЛ" while frozen after a goal
         public Team BannerTeam;
         public MatchPhase Phase = MatchPhase.Playing;
+        /// <summary>Строки для журнала разработчика (автоголы); отображение выводит их в Logs/arena-runtime.log и очищает.</summary>
+        public readonly List<string> Log = new List<string>();
 
         readonly Random rng;
         float Rand() => (float)rng.NextDouble();
@@ -290,7 +292,7 @@ namespace Arena.Sim
         void TakeBall(SimPlayer p)
         {
             Ball.GlueAng = MathF.Atan2(Ball.Y - p.Y, Ball.X - p.X); // received from the side or back: rolls around to the front
-            Ball.Owner = p; Ball.Last = p; Ball.Spin = 0; Ball.Lock = 0.3f; p.Charging = false; p.Charge = 0; Rumble(p, 0.15f);
+            Ball.Owner = p; Ball.Last = p; Ball.LastHow = "приём"; Ball.Spin = 0; Ball.Lock = 0.3f; p.Charging = false; p.Charge = 0; Rumble(p, 0.15f);
             Events.Add(new SimEvent { Kind = FxKind.Receive, X = Ball.X, Y = Ball.Y, Player = p });
         }
 
@@ -311,7 +313,7 @@ namespace Arena.Sim
                     b.X = p.X + nx * (R + BR + 1); b.Y = p.Y + ny * (R + BR + 1);
                     float vx = b.Vx, vy = b.Vy, vn = vx * nx + vy * ny;
                     if (vn < 0) { vx -= 2 * vn * nx; vy -= 2 * vn * ny; }
-                    float k = sp * T.fireKeep / Math.Max(1, M.Len(vx, vy)); b.Vx = vx * k; b.Vy = vy * k; b.Fire = 0;
+                    float k = sp * T.fireKeep / Math.Max(1, M.Len(vx, vy)); b.Vx = vx * k; b.Vy = vy * k; b.Fire = 0; b.Last = p; b.LastHow = "рикошет огненного удара";
                     Impact(b.X, b.Y, 1.4f);
                     Burst(b.X, b.Y, FxColor.Fire, 28, 1.4f); Burst(b.X, b.Y, FxColor.FireYellow, 12, 0.8f); Shake(11); Rumble(p, 0.9f); Rumble(b.FireBy, 0.4f);
                 }
@@ -334,7 +336,7 @@ namespace Arena.Sim
                 float rvx = b.Vx - p.Vx, rvy = b.Vy - p.Vy, vn = rvx * nx + rvy * ny;
                 if (vn < 0)
                 { // a real impact (not the kicker running after his own ball) kills the spin
-                    b.Spin = 0; b.Last = p;
+                    b.Spin = 0; b.Last = p; b.LastHow = p.DashT > 0 ? "отскок от рывка" : canGrab ? "отскок от ног" : "отскок от тела (спиной/боком)";
                     float e = p.DashT > 0 ? 1.1f : (canGrab ? 0.05f : 0.35f);
                     b.Vx -= (1 + e) * vn * nx; b.Vy -= (1 + e) * vn * ny;
                     if (canGrab && p.DashT <= 0) { b.Vx = p.Vx + (b.Vx - p.Vx) * 0.4f; b.Vy = p.Vy + (b.Vy - p.Vy) * 0.4f; } // front touch: deaden at the feet
@@ -379,8 +381,11 @@ namespace Arena.Sim
                 b.X = M.Clamp(b.X, BR, FW - BR);
                 bool inMouthD = b.X > GX1 + BR * 0.5f && b.X < GX2 - BR * 0.5f;
                 if (!inMouthD) b.Y = M.Clamp(b.Y, BR, FH - BR);
-                if (inMouthD && b.Y < 0) { ReleaseBall(p, 0.5f); Goal(Team.Home); }
-                else if (inMouthD && b.Y > FH) { ReleaseBall(p, 0.5f); Goal(Team.Away); }
+                // мяч у ног не заходит в СВОИ ворота: защитник принял мяч у линии лицом к воротам — раньше это сразу было автоголом
+                bool ownGoal = (b.Y < 0 && p.Team == Team.Away) || (b.Y > FH && p.Team == Team.Home);
+                if (inMouthD && ownGoal) b.Y = M.Clamp(b.Y, BR, FH - BR);
+                else if (inMouthD && b.Y < 0) { ReleaseBall(p, 0.5f); b.LastHow = "занёс у ног"; Goal(Team.Home); }
+                else if (inMouthD && b.Y > FH) { ReleaseBall(p, 0.5f); b.LastHow = "занёс у ног"; Goal(Team.Away); }
                 return;
             }
             if (b.Z > 0 || b.Vz > 0)
@@ -434,6 +439,10 @@ namespace Arena.Sim
         {
             bool training = Mode == GameMode.Training;
             if (!training || team == Team.Home) { if (team == Team.Home) ScoreHome++; else ScoreAway++; }
+            var lt = Ball.Last;
+            if (lt != null && lt.Team != team && !training)
+                Log.Add("АВТОГОЛ: " + lt.Hero + " (" + lt.Team + ", " + (lt.IsHuman ? "игрок" : "бот") + "), как: " + Ball.LastHow
+                        + "; скорость мяча " + (int)M.Len(Ball.Vx, Ball.Vy) + ", время " + (int)(MATCH_TIME - Clock) + " с");
             BannerTeam = team;
             Banner = team == Team.Home ? "ГОЛ!" : training ? "АВТОГОЛ" : "ПРОПУСТИЛ";
             Freeze = training ? 0.8f : 1.6f;

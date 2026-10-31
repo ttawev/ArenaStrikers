@@ -12,6 +12,22 @@ namespace Arena.Sim
 
         (float x, float y) AimWithError(float vx, float vy, float e) => M.Rot(vx, vy, (Rand() - 0.5f) * e * 2);
 
+        /// <summary>Мяч, пущенный из позиции b по направлению (ax, ay), летит в створ СВОИХ ворот (с запасом), ближе reach.</summary>
+        bool AimsAtOwnGoal(SimPlayer b, float ax, float ay, float reach = 1700)
+        {
+            float ownY = b.Team == Team.Home ? FH : 0;
+            if (b.Team == Team.Home ? ay <= 0.05f : ay >= -0.05f) return false; // летит не к своим воротам
+            float t = (ownY - b.Y) / ay, xh = b.X + ax * t;
+            return t < reach && xh > GX1 - 170 && xh < GX2 + 170;
+        }
+
+        /// <summary>Вынос вместо удара в свои ворота: вперёд и к ближней бровке.</summary>
+        (float x, float y) Clearance(SimPlayer b)
+        {
+            float fwd = b.Team == Team.Home ? -1 : 1, side = b.X < FW / 2 ? -1 : 1;
+            return M.Norm(side * 0.75f, fwd);
+        }
+
         void BotStep(SimPlayer b, float dt)
         {
             var P = b.Brain; var D = LevelOf(b);
@@ -22,6 +38,7 @@ namespace Arena.Sim
                 b.Charging = true; b.Charge = Math.Min(1, b.Charge + dt / 0.7f);
                 if (b.Charge >= P.ChargeTo)
                 {
+                    if (AimsAtOwnGoal(b, P.Kx, P.Ky)) { var c = Clearance(b); P.Kx = c.x; P.Ky = c.y; P.Curve = 0; Log.Add("бот " + b.Hero + " (" + b.Team + ") чуть не ударил в свои ворота — вынес мяч"); }
                     if (P.Curve != 0) { TryCurve(b, P.Kx, P.Ky, b.Charge, P.Curve); P.Curve = 0; }
                     else TryKick(b, P.Kx, P.Ky, b.Charge);
                     b.Charging = false; b.Charge = 0; P.WantKick = false;
@@ -93,6 +110,8 @@ namespace Arena.Sim
                         float open = 1e9f, lane = 1e9f;
                         foreach (var f in foes) { open = Math.Min(open, M.Len(f.X - mx, f.Y - my)); lane = Math.Min(lane, M.SegDist(f.X, f.Y, b.X, b.Y, mx, my)); }
                         if (open < 90) continue; // marked: don't force it
+                        var pd = M.Norm(mx - b.X, my - b.Y);
+                        if (AimsAtOwnGoal(b, pd.x, pd.y)) continue; // промах по партнёру — мяч в свои ворота: такой пас не даём
                         float openS = M.Clamp01((open - 60) / 220), laneS = M.Clamp01((lane - 25) / 90);
                         bool lob = laneS < 0.5f && md >= 250; // lane cut: go over the top
                         float prog = M.Clamp((Dep(my) - Dep(b.Y)) / 600, -1, 1.5f);
@@ -235,7 +254,7 @@ namespace Arena.Sim
             else if (b.Hero == Hero.Teleport && b.TpCd <= 0 && b.TpBackT <= 0 && ball.Owner == null && dBall > T.tpDist + 80 && (v.x * b.Fx + v.y * b.Fy) > 0.93f && Rand() < D.Abil * 0.25f) UseTp(b);
             // рывок в сторону своих ворот сбивает мяч туда же (на рывке мяч отскакивает, а не ловится) — у своих ворот так не делаем
             var toBall = M.Norm(ball.X - b.X, ball.Y - b.Y);
-            bool towardOwnGoal = toBall.y * -fwd > 0.3f && Dep(ball.Y) < FH * 0.45f;
+            bool towardOwnGoal = toBall.y * -fwd > 0.2f || AimsAtOwnGoal(b, toBall.x, toBall.y); // по всему полю: от рывка мяч улетает далеко
             if (b.DashCd <= 0 && dBall > 55 && dBall < 220 && (foeHas || threat) && !towardOwnGoal && Rand() < D.Dash * 0.35f) TryDash(b, ball.X - b.X, ball.Y - b.Y);
         }
     }

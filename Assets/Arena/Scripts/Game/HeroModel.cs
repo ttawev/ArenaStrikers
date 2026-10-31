@@ -50,10 +50,16 @@ namespace Arena.Game
         [Tooltip("Искр в секунду от пламени")] [Range(0, 60)] public float embers = 16;
         [Header("Лёд (Стена)")]
         [Tooltip("Снежинок инея в секунду с каждого плеча")] [Range(0, 40)] public float frost = 7;
+        [Header("Предметы: багор Багора")]
+        [Tooltip("Багор: размер багра")] [Range(0.3f, 2.5f)] public float hookScale = 1f;
+        [Tooltip("Багор: наклон багра вверх/вниз, градусы")] [Range(-90, 90)] public float hookPitch = -10;
+        [Tooltip("Багор: поворот багра влево/вправо, градусы")] [Range(-90, 90)] public float hookYaw = 0;
+        [Tooltip("Багор: поворот крюка вокруг древка, градусы")] [Range(-180, 180)] public float hookRoll = 0;
+        [Tooltip("Багор: сдвинуть хват вдоль древка, м (плюс — держит ближе к крюку)")] [Range(-0.3f, 0.3f)] public float hookGrip = 0;
         [Tooltip("Развернуть хвост на 180° (если модель в Mixamo поворачивали). Применяется к новому матчу.")] public bool tailFlip = true;
     }
 
-    public class HeroModel
+    public partial class HeroModel
     {
         static readonly string[] Folder = { "Jar", "Bagor", "Mig", "Vihr", "Ten", "Stena" };
         static readonly string[] ClipFile = { "idle", "run", "kick", "kick_strong", "dash", "stun", "run" };
@@ -309,6 +315,7 @@ namespace Arena.Game
             glows = a.Emission != null;
             if (h == Hero.Fire) BuildFireFx(anim);
             if (h == Hero.Wall) BuildFrostFx(anim);
+            BuildProps(anim);
         }
 
         // ---------- огонь Жара: свет, искры ----------
@@ -504,6 +511,7 @@ namespace Arena.Game
                                * Quaternion.AngleAxis(Mathf.Sin(flutT * 0.77f - ci * 0.9f + 1.3f) * fl * 0.6f + wag, Vector3.up) * t.rotation;
                 }
             }
+            TickProps(dt);
         }
     }
 }

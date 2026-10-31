@@ -44,6 +44,7 @@ namespace Arena.Sim
     {
         public float X = Field.FW / 2, Y = Field.FH / 2, Z, Vx, Vy, Vz;
         public SimPlayer Owner, Last, FireBy;
+        public string LastHow = ""; // как Last коснулся мяча последним — для журнала автоголов
         public float Lock, Spin, Fire, FireGrace;
         public float GlueAng; // where around the carrier the ball sits; rolls to the front after a reception
         public Hook Hook; // set while a hook is reeling the ball in

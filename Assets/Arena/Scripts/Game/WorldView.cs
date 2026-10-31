@@ -536,5 +536,8 @@ namespace Arena.Game
         }
 
         public Vector3 BallPos => ball.position;
+
+        /// <summary>Стереть след мяча (при переходе в повтор и обратно мяч «прыгает»).</summary>
+        public void ClearTrails() { if (trail != null) trail.Clear(); }
     }
 }

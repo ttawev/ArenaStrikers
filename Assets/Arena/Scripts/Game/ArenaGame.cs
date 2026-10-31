@@ -21,10 +21,20 @@ namespace Arena.Game
         [Tooltip("Тряска камеры, множитель")] [Range(0, 3)] public float shakeScale = 1;
         [Tooltip("Рывок камеры (приближение) при ударе, градусы")] [Range(0, 8)] public float fovKick = 3;
 
+        [Header("Съёмка клипов (H — скрыть интерфейс, C или правый стик — камера ближе)")]
+        [Tooltip("Камера «для съёмки»: расстояние до поля")] [Range(5, 20)] public float clipDistance = 10;
+        [Tooltip("Камера «для съёмки»: наклон")] [Range(30, 80)] public float clipTilt = 48;
+        [Tooltip("Повтор гола замедленно (в тренировке нет)")] public bool replay = true;
+        [Tooltip("Сколько секунд до гола показывать в повторе")] [Range(1, 6)] public float replaySeconds = 3.5f;
+        [Tooltip("Скорость повтора: 1 — обычная, меньше — замедленно")] [Range(0.2f, 1)] public float replaySpeed = 0.5f;
+        [Tooltip("Через сколько секунд после гола начинается повтор")] [Range(0.2f, 1.5f)] public float replayDelay = 0.9f;
+        [Tooltip("Камера повтора: расстояние до поля")] [Range(4, 20)] public float replayDistance = 8;
+        [Tooltip("Камера повтора: наклон")] [Range(30, 80)] public float replayTilt = 44;
+
         [Header("Модели героев")]
         public HeroArtTuning heroArt = new HeroArtTuning();
 
-        enum State { Menu, Playing, Paused, Ended }
+        enum State { Menu, Playing, Paused, Ended, Replay }
         State state = State.Menu;
         Match match;
         WorldView view;
@@ -47,6 +57,9 @@ namespace Arena.Game
         float denyFlash, hitstop, fovPunch;
         AudioSource audioSrc;
         AudioClip receiveClip;
+        readonly GoalReplay goalReplay = new GoalReplay();
+        float replayIn, camTilt = 52, toastT; string toast = "";
+        bool hudHidden, clipCam;
 
         void Awake()
         {
@@ -64,7 +77,7 @@ namespace Arena.Game
             match = new Match(tuning, System.Environment.TickCount);
             match.Setup(ModeList[modeSel], HeroList[heroSel], diffSel); // something to look at behind the menu
             view.Rebuild(match);
-            camPos = TargetCamPos(true);
+            camPos = TargetCamPos(true); camTilt = cameraTilt;
         }
 
         void StartMatch()
@@ -74,6 +87,7 @@ namespace Arena.Game
             match.Setup(ModeList[modeSel], HeroList[heroSel], diffSel);
             view.Rebuild(match);
             input.ClearPending(); acc = 0;
+            goalReplay.End(match); goalReplay.Clear(); replayIn = 0; Time.timeScale = 1;
             state = State.Playing;
         }
 
@@ -81,6 +95,7 @@ namespace Arena.Game
         {
             float dt = Mathf.Min(Time.unscaledDeltaTime, 0.05f);
             MenuInput();
+            ClipKeys();
             if (state == State.Playing)
             {
                 input.Poll(match.Local.Hero);
@@ -89,36 +104,56 @@ namespace Arena.Game
                 while (acc >= DT)
                 {
                     cmds[0] = input.Take(match.Local.Hero); lastCmd = cmds[0];
+                    bool frozen = match.Freeze > 0;
                     match.Step(DT, cmds);
                     simTime += DT; acc -= DT;
+                    if (!frozen && replay && match.Mode != GameMode.Training) goalReplay.Record(match, simTime, replaySeconds + 0.5f);
                     HandleEvents();
                     if (match.Phase == MatchPhase.Ended) { state = State.Ended; input.StopRumble(); break; }
                 }
+                if (replayIn > 0 && state == State.Playing) { replayIn -= dt; if (replayIn <= 0) StartReplay(); }
+            }
+            else if (state == State.Replay)
+            {
+                if (!goalReplay.Tick(match, dt * replaySpeed, e => Fx(e, false))) EndReplay();
+                match.Events.Clear();
             }
             else match.Events.Clear();
+            foreach (var line in match.Log) Debug.LogWarning("[Arena] " + line); // автоголы — в Logs/arena-runtime.log
+            match.Log.Clear();
             input.UpdateRumble(dt);
             denyFlash = Mathf.Max(0, denyFlash - dt);
             HeroModel.Tune = heroArt;
             view.SetBloom(heroArt.bloom);
-            HeroModel.FrameDt = state == State.Paused || hitstop > 0 ? 0 : dt;
-            view.Sync(match, Time.time, dt, state == State.Playing ? lastCmd : default);
+            float vdt = state == State.Replay ? dt * replaySpeed : dt;
+            HeroModel.FrameDt = state == State.Paused || hitstop > 0 ? 0 : vdt;
+            view.Sync(match, Time.time, vdt, state == State.Playing ? lastCmd : default);
+            toastT = Mathf.Max(0, toastT - dt);
             UpdateCamera(dt);
         }
 
         void HandleEvents()
         {
-            foreach (var e in match.Events)
-            {
+            foreach (var e in match.Events) Fx(e, true);
+            match.Events.Clear();
+        }
+
+        /// <summary>Эффекты события. live = false — событие из повтора гола: без вибрации, заморозки кадра и нового повтора.</summary>
+        void Fx(SimEvent e, bool live)
+        {
                 switch (e.Kind)
                 {
                     case FxKind.Burst: view.Burst(e.X, e.Y, Mat.Of(e.Color), e.Count, e.Amount); break;
                     case FxKind.Shake: shake = Mathf.Max(shake, e.Amount); break;
-                    case FxKind.Goal: view.Burst(e.X, e.Y, e.Team == Team.Home ? Mat.Home : Mat.Away, 60, 1.6f); break;
-                    case FxKind.Rumble: if (e.Player == match.Local) input.Rumble(e.Amount); break;
-                    case FxKind.Denied: if (e.Player == match.Local) denyFlash = 0.25f; break;
+                    case FxKind.Goal:
+                        view.Burst(e.X, e.Y, e.Team == Team.Home ? Mat.Home : Mat.Away, 60, 1.6f);
+                        if (live && replay && match.Mode != GameMode.Training && goalReplay.HasFrames) replayIn = replayDelay;
+                        break;
+                    case FxKind.Rumble: if (live && e.Player == match.Local) input.Rumble(e.Amount); break;
+                    case FxKind.Denied: if (live && e.Player == match.Local) denyFlash = 0.25f; break;
                     case FxKind.Impact:
                         view.Impact(e.X, e.Y, e.Amount);
-                        if (e.Amount >= 0.5f) { hitstop = Mathf.Max(hitstop, (0.045f + 0.075f * Mathf.Min(e.Amount, 1.4f)) * hitstopScale); acc = 0; }
+                        if (live && e.Amount >= 0.5f) { hitstop = Mathf.Max(hitstop, (0.045f + 0.075f * Mathf.Min(e.Amount, 1.4f)) * hitstopScale); acc = 0; }
                         shake = Mathf.Max(shake, e.Amount * 10 * shakeScale);
                         fovPunch = Mathf.Max(fovPunch, Mathf.Clamp01(e.Amount) * fovKick);
                         view.Burst(e.X, e.Y, Mat.Mist, (int)(6 + 10 * e.Amount), 0.6f + 0.6f * e.Amount);
@@ -128,9 +163,32 @@ namespace Arena.Game
                         audioSrc.PlayOneShot(receiveClip, e.Player == match.Local ? 0.9f : 0.45f);
                         break;
                 }
-            }
-            match.Events.Clear();
         }
+
+        // ---------- повтор гола и съёмка ----------
+        void StartReplay()
+        {
+            if (!goalReplay.Begin(match, replaySeconds, 0.6f)) return;
+            state = State.Replay; Time.timeScale = replaySpeed; // частицы и анимации стадиона тоже замедляются
+            input.StopRumble(); view.ClearTrails();
+        }
+
+        void EndReplay()
+        {
+            goalReplay.End(match);
+            Time.timeScale = 1; state = State.Playing;
+            input.ClearPending(); acc = 0; view.ClearTrails();
+        }
+
+        void ClipKeys()
+        {
+            var kb = Keyboard.current; var gp = Gamepad.current;
+            if (kb != null && kb.hKey.wasPressedThisFrame) { hudHidden = !hudHidden; Toast(hudHidden ? "Интерфейс скрыт (H — вернуть)" : "Интерфейс показан"); }
+            if ((kb != null && kb.cKey.wasPressedThisFrame) || (gp != null && gp.rightStickButton.wasPressedThisFrame))
+            { clipCam = !clipCam; Toast(clipCam ? "Камера: ближе (для съёмки)" : "Камера: обычная"); }
+        }
+
+        void Toast(string text) { toast = text; toastT = 1.6f; }
 
         // ---------- menus: keyboard, gamepad, mouse ----------
         void MenuInput()
@@ -160,6 +218,9 @@ namespace Arena.Game
                     if (pause || confirm) { state = State.Playing; input.ClearPending(); acc = 0; }
                     else if (back) state = State.Menu;
                     break;
+                case State.Replay:
+                    if (confirm || pause || back) EndReplay(); // пропустить повтор
+                    break;
                 case State.Ended:
                     if (confirm) StartMatch();
                     else if (back) state = State.Menu;
@@ -171,23 +232,28 @@ namespace Arena.Game
         Vector3 TargetCamPos(bool snap)
         {
             var you = match.Local; var b = match.Ball;
-            float tx = you.X * 0.6f + b.X * 0.4f, ty = you.Y * 0.6f + b.Y * 0.4f;
+            float wy = state == State.Replay ? 0.1f : clipCam ? 0.45f : 0.6f; // повтор и съёмка — больше на мяч
+            float tx = you.X * wy + b.X * (1 - wy), ty = you.Y * wy + b.Y * (1 - wy);
             Vector3 focus = W.Pos(tx, ty);
             // keep the view over the pitch
             float halfLen = Field.FH / 2 * W.S, halfWid = Field.FW / 2 * W.S;
             focus.x = Mathf.Clamp(focus.x, -halfLen + 5, halfLen - 5);
             focus.z = Mathf.Clamp(focus.z, -halfWid + 3, halfWid - 3);
-            var rot = Quaternion.Euler(cameraTilt, 0, 0);
-            return focus - rot * Vector3.forward * cameraDistance;
+            float dist = state == State.Replay ? replayDistance : clipCam ? clipDistance : cameraDistance;
+            var rot = Quaternion.Euler(snap ? CamTiltTarget : camTilt, 0, 0);
+            return focus - rot * Vector3.forward * dist;
         }
+
+        float CamTiltTarget => state == State.Replay ? replayTilt : clipCam ? clipTilt : cameraTilt;
 
         void UpdateCamera(float dt)
         {
+            camTilt = Mathf.Lerp(camTilt, CamTiltTarget, 1 - Mathf.Exp(-4 * dt));
             var target = TargetCamPos(false);
-            camPos = Vector3.Lerp(camPos, target, 1 - Mathf.Exp(-5 * dt));
+            camPos = Vector3.Lerp(camPos, target, 1 - Mathf.Exp((state == State.Replay ? -3 : -5) * dt));
             fovPunch = Mathf.Max(0, fovPunch - dt * 18);
             cam.fieldOfView = cameraFov - fovPunch;
-            cam.transform.rotation = Quaternion.Euler(cameraTilt, 0, 0);
+            cam.transform.rotation = Quaternion.Euler(camTilt, 0, 0);
             Vector3 jitter = shake > 0 ? new Vector3(Random.value - 0.5f, 0, Random.value - 0.5f) * shake * 4f * W.S : Vector3.zero;
             cam.transform.position = camPos + jitter;
             shake = Mathf.Max(0, shake - dt * 30);
@@ -215,7 +281,9 @@ namespace Arena.Game
         {
             Styles();
             float w = Screen.width, h = Screen.height;
-            if (state == State.Playing || state == State.Paused || state == State.Ended) Hud(w, h);
+            if (state == State.Playing || state == State.Paused || state == State.Ended) { if (hudHidden) BannerOnly(w, h); else Hud(w, h); }
+            if (state == State.Replay) ReplayGui(w, h);
+            if (toastT > 0) { var c = new Color(1, 1, 1, Mathf.Clamp01(toastT * 2)); Shadowed(new Rect(0, h * 0.08f, w, 30), toast, mid, c); }
             if (state == State.Menu) MenuGui(w, h);
             if (state == State.Paused) Panel(w, h, "Пауза", "A / Enter — продолжить     B / Backspace — в меню");
             if (state == State.Ended)
@@ -223,6 +291,24 @@ namespace Arena.Game
                 string title = match.ScoreHome > match.ScoreAway ? "Победа" : match.ScoreHome < match.ScoreAway ? "Поражение" : "Ничья";
                 Panel(w, h, title + "   " + match.ScoreHome + " : " + match.ScoreAway, "A / Enter — ещё матч     B / Backspace — в меню");
             }
+        }
+
+        void BannerOnly(float w, float h)
+        {
+            if (match.Freeze > 0 && state == State.Playing && match.Banner != "")
+                Shadowed(new Rect(0, h * 0.35f, w, 100), match.Banner, banner, match.BannerTeam == Team.Home ? Mat.Home : Mat.Away);
+        }
+
+        void ReplayGui(float w, float h)
+        {   // как в телетрансляции: «ПОВТОР» в углу и полоска; подсказка — только с интерфейсом
+            float x = 28, y = 24;
+            GUI.color = new Color(0.9f, 0.15f, 0.2f, 0.6f + 0.4f * Mathf.Abs(Mathf.Sin(Time.unscaledTime * 3)));
+            if (disc == null) disc = MakeCircle(false);
+            GUI.DrawTexture(new Rect(x, y + 8, 16, 16), disc); GUI.color = Color.white;
+            Shadowed(new Rect(x + 26, y, 300, 32), "ПОВТОР", mid.Left(), Color.white);
+            GUI.color = new Color(1, 1, 1, 0.2f); GUI.DrawTexture(new Rect(x, y + 40, 160, 4), Texture2D.whiteTexture);
+            GUI.color = Color.white; GUI.DrawTexture(new Rect(x, y + 40, 160 * Mathf.Clamp01(goalReplay.Progress), 4), Texture2D.whiteTexture);
+            if (!hudHidden) { GUI.color = new Color(1, 1, 1, 0.55f); GUI.Label(new Rect(24, h - 34, w * 0.5f, 24), "A / Enter — пропустить повтор", small); GUI.color = Color.white; }
         }
 
         void Hud(float w, float h)
@@ -370,7 +456,7 @@ namespace Arena.Game
             return clicked;
         }
 
-        void OnDisable() => input.StopRumble();
+        void OnDisable() { input.StopRumble(); Time.timeScale = 1; }
     }
 
     /// <summary>Editor play sessions: errors and warnings go to Logs/arena-runtime.log so they can be read without the Console.</summary>
@@ -396,6 +482,7 @@ namespace Arena.Game
     static class GuiStyleExt
     {
         public static GUIStyle Center(this GUIStyle s) => new GUIStyle(s) { alignment = TextAnchor.MiddleCenter };
+        public static GUIStyle Left(this GUIStyle s) => new GUIStyle(s) { alignment = TextAnchor.MiddleLeft };
         public static GUIStyle Small(this GUIStyle s) => new GUIStyle(s) { fontSize = 16, fontStyle = FontStyle.Normal };
     }
 }
