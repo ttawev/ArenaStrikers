@@ -454,7 +454,7 @@ namespace Arena.Game
             EnsureHeroes(m);
             SyncWalls(m, t);
             stadium.Sync(m, t, dt);
-            for (int i = 0; i < m.Players.Count; i++) heroes[i].Sync(m, m.Players[i], t, m.Mode != GameMode.OneVsOne && m.Mode != GameMode.Training && i == 0);
+            for (int i = 0; i < m.Players.Count; i++) heroes[i].Sync(m, m.Players[i], t, m.Mode != GameMode.OneVsOne && m.Mode != GameMode.Training && m.Players[i] == m.Local);
             if (wasInvisible.Length != m.Players.Count) wasInvisible = new bool[m.Players.Count];
             for (int i = 0; i < m.Players.Count; i++)
             {   // Тень: a big puff when vanishing, a smaller one when reappearing

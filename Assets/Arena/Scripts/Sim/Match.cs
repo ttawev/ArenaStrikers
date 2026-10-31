@@ -58,7 +58,7 @@ namespace Arena.Sim
         public void Setup(GameMode mode, Hero myHero, int difficulty)
         {
             Mode = mode; Difficulty = Math.Max(0, Math.Min(2, difficulty));
-            Players.Clear();
+            Players.Clear(); localCache = null; LocalSlot = 0;
             Add(Team.Home, myHero, 0);
             var mine = new List<Hero>(Shuffled(AllHeroes)); mine.Remove(myHero);
             var opp = Shuffled(AllHeroes);
@@ -86,7 +86,52 @@ namespace Arena.Sim
             Freeze = Mode == GameMode.Training ? 0.3f : 1.2f;
         }
 
-        public SimPlayer Local => Players[0];
+        /// <summary>Какой слот управления у этого компьютера (0 — хост или одиночная игра; в онлайне у друзей 1, 2, ...).</summary>
+        public int LocalSlot;
+        SimPlayer localCache;
+        public SimPlayer Local
+        {
+            get
+            {
+                if (localCache == null || localCache.HumanSlot != LocalSlot || !Players.Contains(localCache))
+                    localCache = Players.Find(p => p.HumanSlot == LocalSlot) ?? (Players.Count > 0 ? Players[0] : null);
+                return localCache;
+            }
+        }
+
+        /// <summary>Место в составе для онлайна: команда, герой, слот управления (-1 — бот).</summary>
+        public struct Seat { public Team Team; public Hero Hero; public int Slot; }
+
+        public static int TeamSize(GameMode mode) => mode == GameMode.OneVsOne ? 1 : mode == GameMode.TwoVsTwo ? 2 : 4;
+
+        /// <summary>Онлайн, хост: живые игроки по командам, свободные места — боты (герои в команде не повторяются).</summary>
+        public void SetupLineup(GameMode mode, IList<Seat> humans, int difficulty)
+        {
+            Mode = mode; Difficulty = Math.Max(0, Math.Min(2, difficulty));
+            Players.Clear(); localCache = null;
+            int per = TeamSize(mode);
+            foreach (var team in new[] { Team.Home, Team.Away })
+            {   // порядок важен для расстановки: сначала все хозяева, потом все гости
+                var used = new List<Hero>(); int n = 0;
+                foreach (var h in humans) if (h.Team == team && n < per) { Add(team, h.Hero, h.Slot); used.Add(h.Hero); n++; }
+                foreach (var hero in Shuffled(AllHeroes))
+                {
+                    if (n >= per) break;
+                    if (used.Contains(hero)) continue;
+                    Add(team, hero); n++;
+                }
+            }
+            NewMatch();
+        }
+
+        /// <summary>Онлайн, у друзей: точная копия состава хоста (дальше состояние приходит по сети).</summary>
+        public void SetupExact(GameMode mode, IList<Seat> all, int difficulty)
+        {
+            Mode = mode; Difficulty = Math.Max(0, Math.Min(2, difficulty));
+            Players.Clear(); localCache = null;
+            foreach (var s in all) Add(s.Team, s.Hero, s.Slot);
+            NewMatch();
+        }
         public IEnumerable<SimPlayer> Enemies(SimPlayer p) { foreach (var q in Players) if (q.Team != p.Team) yield return q; }
         public IEnumerable<SimPlayer> Mates(SimPlayer p) { foreach (var q in Players) if (q.Team == p.Team && q != p) yield return q; }
 

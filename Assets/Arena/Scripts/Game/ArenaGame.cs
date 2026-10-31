@@ -34,7 +34,7 @@ namespace Arena.Game
         [Header("Модели героев")]
         public HeroArtTuning heroArt = new HeroArtTuning();
 
-        enum State { Menu, Playing, Paused, Ended, Replay }
+        enum State { Menu, Playing, Paused, Ended, Replay, Lobby }
         State state = State.Menu;
         Match match;
         WorldView view;
@@ -43,7 +43,7 @@ namespace Arena.Game
         Vector3 camPos;
         float shake, acc, simTime;
         const float DT = 1f / 120;
-        readonly InputCommand[] cmds = new InputCommand[1];
+        readonly InputCommand[] cmds = new InputCommand[8]; // слот 0 — этот компьютер, 1..7 — друзья онлайн
         InputCommand lastCmd;
 
         // menu selections
@@ -60,11 +60,17 @@ namespace Arena.Game
         readonly GoalReplay goalReplay = new GoalReplay();
         float replayIn, camTilt = 52, toastT; string toast = "";
         bool hudHidden, clipCam;
+        // онлайн
+        Online net; string netName = "", joinCode = "", netError = ""; Team netTeam = Team.Home; bool netMenu;
+        bool IsClient => net != null && !net.IsHost;
+        bool IsHostOnline => net != null && net.IsHost;
 
         void Awake()
         {
             RuntimeLog.Start();
             Application.targetFrameRate = 144;
+            Application.runInBackground = true; // онлайн: игра не должна замирать, когда окно не в фокусе
+            netName = PlayerPrefs.GetString("arena.name", System.Environment.UserName);
             heroSel = PlayerPrefs.GetInt("arena.hero", 0); modeSel = PlayerPrefs.GetInt("arena.mode", 2); diffSel = PlayerPrefs.GetInt("arena.diff", 1);
             cam = Camera.main;
             if (cam == null) { var go = new GameObject("Main Camera") { tag = "MainCamera" }; cam = go.AddComponent<Camera>(); go.AddComponent<AudioListener>(); }
@@ -83,6 +89,7 @@ namespace Arena.Game
         void StartMatch()
         {
             PlayerPrefs.SetInt("arena.hero", heroSel); PlayerPrefs.SetInt("arena.mode", modeSel); PlayerPrefs.SetInt("arena.diff", diffSel);
+            GUIUtility.keyboardControl = 0;
             match.T = tuning;
             match.Setup(ModeList[modeSel], HeroList[heroSel], diffSel);
             view.Rebuild(match);
@@ -95,8 +102,18 @@ namespace Arena.Game
         {
             float dt = Mathf.Min(Time.unscaledDeltaTime, 0.05f);
             MenuInput();
-            ClipKeys();
-            if (state == State.Playing)
+            if (state == State.Playing || state == State.Replay) ClipKeys();
+            if (net != null) NetUpdate();
+            if (state == State.Playing && IsClient)
+            {   // друг: матч считает хост, мы шлём ввод и показываем его снимки
+                input.Poll(match.Local.Hero);
+                var c = input.Take(match.Local.Hero); lastCmd = c;
+                net.SendInput(netMenu ? default : c, dt);
+                net.ClientTick(match, 0.1f, e => Fx(e, false, true));
+                if (match.Phase == MatchPhase.Ended) { state = State.Ended; input.StopRumble(); }
+            }
+            else if (state == State.Ended && IsClient) net.ClientTick(match, 0.1f, e => Fx(e, false, true));
+            else if (state == State.Playing)
             {
                 input.Poll(match.Local.Hero);
                 if (hitstop > 0) hitstop -= dt; // freeze-frame on strong hits: the sim waits, input is kept
@@ -104,10 +121,13 @@ namespace Arena.Game
                 while (acc >= DT)
                 {
                     cmds[0] = input.Take(match.Local.Hero); lastCmd = cmds[0];
+                    if (netMenu) cmds[0] = default;
+                    if (IsHostOnline) for (int k = 1; k < cmds.Length; k++) cmds[k] = net.TakeInput(k);
                     bool frozen = match.Freeze > 0;
                     match.Step(DT, cmds);
                     simTime += DT; acc -= DT;
-                    if (!frozen && replay && match.Mode != GameMode.Training) goalReplay.Record(match, simTime, replaySeconds + 0.5f);
+                    if (!frozen && replay && net == null && match.Mode != GameMode.Training) goalReplay.Record(match, simTime, replaySeconds + 0.5f);
+                    if (net != null) net.AddEvents(match.Events);
                     HandleEvents();
                     if (match.Phase == MatchPhase.Ended) { state = State.Ended; input.StopRumble(); break; }
                 }
@@ -119,6 +139,7 @@ namespace Arena.Game
                 match.Events.Clear();
             }
             else match.Events.Clear();
+            if (IsHostOnline && (state == State.Playing || state == State.Ended)) net.HostTick(match, simTime, dt);
             foreach (var line in match.Log) Debug.LogWarning("[Arena] " + line); // автоголы — в Logs/arena-runtime.log
             match.Log.Clear();
             input.UpdateRumble(dt);
@@ -139,7 +160,7 @@ namespace Arena.Game
         }
 
         /// <summary>Эффекты события. live = false — событие из повтора гола: без вибрации, заморозки кадра и нового повтора.</summary>
-        void Fx(SimEvent e, bool live)
+        void Fx(SimEvent e, bool live, bool remote = false)
         {
                 switch (e.Kind)
                 {
@@ -147,10 +168,10 @@ namespace Arena.Game
                     case FxKind.Shake: shake = Mathf.Max(shake, e.Amount); break;
                     case FxKind.Goal:
                         view.Burst(e.X, e.Y, e.Team == Team.Home ? Mat.Home : Mat.Away, 60, 1.6f);
-                        if (live && replay && match.Mode != GameMode.Training && goalReplay.HasFrames) replayIn = replayDelay;
+                        if (live && replay && net == null && match.Mode != GameMode.Training && goalReplay.HasFrames) replayIn = replayDelay;
                         break;
-                    case FxKind.Rumble: if (live && e.Player == match.Local) input.Rumble(e.Amount); break;
-                    case FxKind.Denied: if (live && e.Player == match.Local) denyFlash = 0.25f; break;
+                    case FxKind.Rumble: if ((live || remote) && e.Player == match.Local) input.Rumble(e.Amount); break;
+                    case FxKind.Denied: if ((live || remote) && e.Player == match.Local) denyFlash = 0.25f; break;
                     case FxKind.Impact:
                         view.Impact(e.X, e.Y, e.Amount);
                         if (live && e.Amount >= 0.5f) { hitstop = Mathf.Max(hitstop, (0.045f + 0.075f * Mathf.Min(e.Amount, 1.4f)) * hitstopScale); acc = 0; }
@@ -194,6 +215,8 @@ namespace Arena.Game
         void MenuInput()
         {
             var gp = Gamepad.current; var kb = Keyboard.current;
+            bool typing = (state == State.Menu || state == State.Lobby) && GUIUtility.keyboardControl != 0; // печатают имя или код комнаты — клавиши не трогаем
+            if (typing) kb = null;
             bool confirm = (gp != null && gp.buttonSouth.wasPressedThisFrame) || (kb != null && kb.enterKey.wasPressedThisFrame);
             bool back = (gp != null && gp.buttonEast.wasPressedThisFrame) || (kb != null && kb.backspaceKey.wasPressedThisFrame);
             bool pause = (gp != null && gp.startButton.wasPressedThisFrame) || (kb != null && (kb.escapeKey.wasPressedThisFrame || kb.pKey.wasPressedThisFrame));
@@ -212,7 +235,12 @@ namespace Arena.Game
                     if (confirm || (gp != null && gp.startButton.wasPressedThisFrame)) StartMatch();
                     break;
                 case State.Playing:
-                    if (pause) { state = State.Paused; input.StopRumble(); }
+                    if (net != null) { if (pause) netMenu = !netMenu; else if (netMenu && back) ExitOnline(); } // онлайн матч не ставится на паузу
+                    else if (pause) { state = State.Paused; input.StopRumble(); }
+                    break;
+                case State.Lobby:
+                    if (back) ExitOnline();
+                    else if (confirm && IsHostOnline && net.State == Online.Phase.Lobby) StartOnlineMatch();
                     break;
                 case State.Paused:
                     if (pause || confirm) { state = State.Playing; input.ClearPending(); acc = 0; }
@@ -222,7 +250,8 @@ namespace Arena.Game
                     if (confirm || pause || back) EndReplay(); // пропустить повтор
                     break;
                 case State.Ended:
-                    if (confirm) StartMatch();
+                    if (net != null) { if (confirm && IsHostOnline) StartOnlineMatch(); else if (back) ExitOnline(); }
+                    else if (confirm) StartMatch();
                     else if (back) state = State.Menu;
                     break;
             }
@@ -283,20 +312,28 @@ namespace Arena.Game
             float w = Screen.width, h = Screen.height;
             if (state == State.Playing || state == State.Paused || state == State.Ended) { if (hudHidden) BannerOnly(w, h); else Hud(w, h); }
             if (state == State.Replay) ReplayGui(w, h);
+            if (state == State.Lobby) LobbyGui(w, h);
+            if (state == State.Playing && net != null && netMenu) Panel(w, h, "Онлайн-матч идёт", "Esc / Start — вернуться в игру     B / Backspace — выйти из комнаты");
             if (toastT > 0) { var c = new Color(1, 1, 1, Mathf.Clamp01(toastT * 2)); Shadowed(new Rect(0, h * 0.08f, w, 30), toast, mid, c); }
             if (state == State.Menu) MenuGui(w, h);
             if (state == State.Paused) Panel(w, h, "Пауза", "A / Enter — продолжить     B / Backspace — в меню");
             if (state == State.Ended)
             {
-                string title = match.ScoreHome > match.ScoreAway ? "Победа" : match.ScoreHome < match.ScoreAway ? "Поражение" : "Ничья";
-                Panel(w, h, title + "   " + match.ScoreHome + " : " + match.ScoreAway, "A / Enter — ещё матч     B / Backspace — в меню");
+                bool away = match.Local.Team == Team.Away; int mine = away ? match.ScoreAway : match.ScoreHome, theirs = away ? match.ScoreHome : match.ScoreAway;
+                string title = mine > theirs ? "Победа" : mine < theirs ? "Поражение" : "Ничья";
+                string hint = net == null ? "A / Enter — ещё матч     B / Backspace — в меню"
+                            : IsHostOnline ? "A / Enter — ещё матч (для всех)     B / Backspace — выйти из комнаты" : "Ждём, пока хост начнёт новый матч…     B / Backspace — выйти";
+                Panel(w, h, title + "   " + mine + " : " + theirs, hint);
             }
         }
+
+        /// <summary>«ГОЛ!» / «ПРОПУСТИЛ» — со стороны этого игрока (в онлайне он может играть за любую команду).</summary>
+        string BannerText() => match.Mode == GameMode.Training ? match.Banner : match.BannerTeam == match.Local.Team ? "ГОЛ!" : "ПРОПУСТИЛ";
 
         void BannerOnly(float w, float h)
         {
             if (match.Freeze > 0 && state == State.Playing && match.Banner != "")
-                Shadowed(new Rect(0, h * 0.35f, w, 100), match.Banner, banner, match.BannerTeam == Team.Home ? Mat.Home : Mat.Away);
+                Shadowed(new Rect(0, h * 0.35f, w, 100), BannerText(), banner, match.BannerTeam == Team.Home ? Mat.Home : Mat.Away);
         }
 
         void ReplayGui(float w, float h)
@@ -314,14 +351,15 @@ namespace Arena.Game
         void Hud(float w, float h)
         {
             bool training = match.Mode == GameMode.Training;
-            string score = training ? "Голы: " + match.ScoreHome : (match.Mode == GameMode.OneVsOne ? "Ты " : "Мы ") + match.ScoreHome + " : " + match.ScoreAway + (match.Mode == GameMode.OneVsOne ? " Бот" : " Они");
+            bool away = match.Local.Team == Team.Away; int mine = away ? match.ScoreAway : match.ScoreHome, theirs = away ? match.ScoreHome : match.ScoreAway;
+            string score = training ? "Голы: " + match.ScoreHome : (match.Mode == GameMode.OneVsOne ? "Ты " : "Мы ") + mine + " : " + theirs + (match.Mode == GameMode.OneVsOne ? (net != null ? " Соперник" : " Бот") : " Они");
             // счёт и время крупно показывает табло на стадионе; здесь — маленькая подсказка в углу,
             // на случай когда табло за краем кадра (камера у ближнего борта)
             if (!training) { int c = Mathf.CeilToInt(match.Clock); score += "   " + (c / 60) + ":" + (c % 60).ToString("00"); }
             Shadowed(new Rect(16, 10, w * 0.4f, 30), score, small, new Color(0.85f, 0.92f, 0.9f));
             if (match.Freeze > 0 && state == State.Playing)
             {
-                string text = match.Banner != "" ? match.Banner : "ВПЕРЁД";
+                string text = match.Banner != "" ? BannerText() : "ВПЕРЁД";
                 Color col = match.Banner == "" ? Mat.Chalk : match.BannerTeam == Team.Home ? Mat.Home : Mat.Away;
                 Shadowed(new Rect(0, h * 0.35f, w, 100), text, match.Banner != "" ? banner : big, col);
             }
@@ -420,12 +458,146 @@ namespace Arena.Game
             Shadowed(new Rect(0, h * 0.38f + 80, w, 40), hint, mid.Small(), new Color(0.8f, 0.9f, 0.86f));
         }
 
+        // ---------- онлайн: комната ----------
+        void CreateRoom()
+        {
+            PlayerPrefs.SetInt("arena.hero", heroSel);
+            netError = ""; netTeam = Team.Home;
+            net = new Online(); net.MatchStarted += OnNetStart;
+            net.Host(netName, HeroList[heroSel]);
+            state = State.Lobby;
+        }
+
+        void JoinRoom()
+        {
+            PlayerPrefs.SetInt("arena.hero", heroSel);
+            netError = ""; netTeam = Team.Away;
+            net = new Online(); net.MatchStarted += OnNetStart;
+            net.Join(joinCode, netName, HeroList[heroSel]);
+            state = State.Lobby;
+        }
+
+        void ExitOnline()
+        {
+            if (net != null)
+            {
+                net.MatchStarted -= OnNetStart;
+                if (net.State != Online.Phase.Failed) net.Leave();
+                net = null;
+            }
+            netMenu = false; Time.timeScale = 1; input.StopRumble();
+            match.T = tuning; match.Setup(ModeList[modeSel], HeroList[heroSel], diffSel); view.Rebuild(match);
+            state = State.Menu;
+        }
+
+        void NetUpdate()
+        {
+            if (net.State == Online.Phase.Failed) { netError = net.Status; ExitOnline(); return; }
+            if (net.IsHost)
+                while (net.LeftSlots.Count > 0)
+                {
+                    int slot = net.LeftSlots.Dequeue();
+                    var p = match.Players.Find(x => x.HumanSlot == slot && slot != 0);
+                    if (p != null && state != State.Lobby) { p.HumanSlot = -1; Toast("Игрок вышел — за него играет бот"); } // дальше героем управляет бот
+                }
+        }
+
+        /// <summary>Хост: начать матч со всеми в комнате (свободные места — боты).</summary>
+        void StartOnlineMatch()
+        {
+            var humans = new System.Collections.Generic.List<Match.Seat>();
+            int home = 0, away = 0;
+            foreach (var st in net.Roster) { humans.Add(new Match.Seat { Team = st.Team, Hero = st.Hero, Slot = st.Slot }); if (st.Team == Team.Home) home++; else away++; }
+            var mode = net.Mode;
+            int need = Mathf.Max(home, away);
+            if (Match.TeamSize(mode) < need) mode = need <= 2 ? GameMode.TwoVsTwo : GameMode.FourVsFour;
+            match.T = tuning; match.LocalSlot = 0;
+            match.SetupLineup(mode, humans, net.Difficulty);
+            view.Rebuild(match);
+            input.ClearPending(); acc = 0; hitstop = 0; goalReplay.Clear(); Time.timeScale = 1; netMenu = false;
+            net.SendStart(match);
+            state = State.Playing;
+        }
+
+        /// <summary>Друг: хост начал матч.</summary>
+        void OnNetStart(GameMode mode, int diff, System.Collections.Generic.List<Match.Seat> seats)
+        {
+            match.T = tuning; match.LocalSlot = net.MySlot;
+            match.SetupExact(mode, seats, diff);
+            view.Rebuild(match);
+            input.ClearPending(); netMenu = false; Time.timeScale = 1;
+            state = State.Playing;
+        }
+
+        void LobbyGui(float w, float h)
+        {
+            GUI.color = new Color(0, 0, 0, 0.62f); GUI.DrawTexture(new Rect(0, 0, w, h), Texture2D.whiteTexture); GUI.color = Color.white;
+            float cw = Mathf.Min(760, w - 40), x = (w - cw) / 2, y = Mathf.Max(30, h * 0.08f);
+            if (net == null) return;
+            if (net.State == Online.Phase.Connecting)
+            {
+                Shadowed(new Rect(0, h * 0.4f, w, 40), net.Status, mid, Color.white);
+                if (GUI.Button(new Rect(w / 2 - 100, h * 0.4f + 60, 200, 40), "Отмена  (B)")) ExitOnline();
+                return;
+            }
+            Shadowed(new Rect(0, y, w, 50), "КОМНАТА  " + net.Code, big, Mat.Accent); y += 56;
+            if (GUI.Button(new Rect(w / 2 - 110, y, 220, 30), "Скопировать код")) { GUIUtility.systemCopyBuffer = net.Code; Toast("Код скопирован — отправь его друзьям"); }
+            y += 44;
+
+            GUI.Label(new Rect(x, y, cw, 24), "Игроки (пустые места займут боты):", small); y += 26;
+            foreach (var st in net.Roster)
+            {
+                bool me = st.Slot == net.MySlot;
+                Color tc = st.Team == Team.Home ? Mat.Home : Mat.Away;
+                GUI.color = new Color(tc.r, tc.g, tc.b, 0.35f); GUI.DrawTexture(new Rect(x, y, cw, 30), Texture2D.whiteTexture); GUI.color = Color.white;
+                string who = (st.Slot == 0 ? "★ " : "") + st.Name + (me ? "  (ты)" : "");
+                GUI.Label(new Rect(x + 10, y + 5, cw * 0.5f, 24), who, small);
+                GUI.Label(new Rect(x + cw * 0.5f, y + 5, cw * 0.25f, 24), st.Team == Team.Home ? "Синие" : "Красные", small);
+                GUI.Label(new Rect(x + cw * 0.75f, y + 5, cw * 0.25f, 24), HeroNames[System.Array.IndexOf(HeroList, st.Hero)], small);
+                y += 34;
+            }
+            y += 10;
+
+            GUI.Label(new Rect(x, y, cw, 24), "Твой герой:", small); y += 26;
+            int hn = HeroList.Length;
+            for (int i = 0; i < hn; i++)
+                if (Toggle(new Rect(x + i * (cw / hn), y, cw / hn - 8, 36), heroSel == i, HeroNames[i]) && heroSel != i) { heroSel = i; net.SetMine(HeroList[heroSel], netTeam); }
+            y += 46;
+            GUI.Label(new Rect(x, y, cw, 24), "Твоя команда:", small); y += 26;
+            if (Toggle(new Rect(x, y, cw / 2 - 8, 36), netTeam == Team.Home, "Синие") && netTeam != Team.Home) { netTeam = Team.Home; net.SetMine(HeroList[heroSel], netTeam); }
+            if (Toggle(new Rect(x + cw / 2, y, cw / 2 - 8, 36), netTeam == Team.Away, "Красные") && netTeam != Team.Away) { netTeam = Team.Away; net.SetMine(HeroList[heroSel], netTeam); }
+            y += 50;
+
+            if (net.IsHost)
+            {
+                GUI.Label(new Rect(x, y, cw, 24), "Формат:", small); y += 26;
+                GameMode[] modes = { GameMode.OneVsOne, GameMode.TwoVsTwo, GameMode.FourVsFour };
+                string[] mn = { "1 на 1", "2 на 2", "4 на 4" };
+                for (int i = 0; i < 3; i++)
+                    if (Toggle(new Rect(x + i * (cw / 3), y, cw / 3 - 8, 34), net.Mode == modes[i], mn[i]) && net.Mode != modes[i]) net.SetMode(modes[i], net.Difficulty);
+                y += 42;
+                GUI.Label(new Rect(x, y, cw, 24), "Сложность ботов:", small); y += 26;
+                for (int i = 0; i < 3; i++)
+                    if (Toggle(new Rect(x + i * (cw / 3), y, cw / 3 - 8, 34), net.Difficulty == i, DiffNames[i]) && net.Difficulty != i) net.SetMode(net.Mode, i);
+                y += 50;
+                if (GUI.Button(new Rect(x, y, cw, 50), "Начать матч  (A / Enter)")) StartOnlineMatch();
+            }
+            else
+            {
+                string mname = net.Mode == GameMode.OneVsOne ? "1 на 1" : net.Mode == GameMode.TwoVsTwo ? "2 на 2" : "4 на 4";
+                Shadowed(new Rect(0, y, w, 30), "Формат " + mname + " · ждём, пока хост начнёт матч…", mid.Small(), new Color(0.8f, 0.9f, 0.86f));
+                y += 50;
+            }
+            y += 60;
+            if (GUI.Button(new Rect(x, y, cw, 36), "Выйти из комнаты  (B / Backspace)")) ExitOnline();
+        }
+
         void MenuGui(float w, float h)
         {
             GUI.color = new Color(0, 0, 0, 0.55f); GUI.DrawTexture(new Rect(0, 0, w, h), Texture2D.whiteTexture); GUI.color = Color.white;
-            float cw = Mathf.Min(720, w - 40), x = (w - cw) / 2, y = Mathf.Max(30, h * 0.12f);
+            float cw = Mathf.Min(720, w - 40), x = (w - cw) / 2, y = Mathf.Max(16, h * 0.04f);
             Shadowed(new Rect(0, y, w, 60), "АРЕНА СТРАЙКЕРОВ", big, Mat.Accent); y += 70;
-            Shadowed(new Rect(0, y, w, 24), "серая коробка · этап 1", small.Center(), new Color(0.6f, 0.7f, 0.68f)); y += 44;
+            Shadowed(new Rect(0, y, w, 24), "ранняя версия", small.Center(), new Color(0.6f, 0.7f, 0.68f)); y += 34;
 
             GUI.Label(new Rect(x, y, cw, 24), "Герой  (крестовина ← →)", small); y += 26;
             int hn = HeroList.Length;
@@ -440,8 +612,21 @@ namespace Arena.Game
             for (int i = 0; i < 3; i++)
                 if (Toggle(new Rect(x + i * (cw / 3), y, cw / 3 - 8, 36), diffSel == i, DiffNames[i])) diffSel = i;
             y += 60;
-            if (GUI.Button(new Rect(x, y, cw, 50), "Играть  (A / Enter)")) StartMatch();
-            y += 70;
+            if (GUI.Button(new Rect(x, y, cw, 50), "Играть с ботами  (A / Enter)")) StartMatch();
+            y += 64;
+            // ---- онлайн с друзьями ----
+            GUI.Label(new Rect(x, y, cw, 24), "Онлайн с друзьями: создай комнату и скажи друзьям код (герой — выбранный выше)", small); y += 28;
+            GUI.Label(new Rect(x, y + 6, 60, 24), "Имя:", small);
+            string nn = GUI.TextField(new Rect(x + 52, y, 200, 34), netName, 16, new GUIStyle(GUI.skin.textField) { fontSize = 16, alignment = TextAnchor.MiddleLeft });
+            if (nn != netName) { netName = nn; PlayerPrefs.SetString("arena.name", nn); }
+            if (GUI.Button(new Rect(x + 270, y, cw - 270, 34), "Создать комнату")) { GUIUtility.keyboardControl = 0; CreateRoom(); }
+            y += 42;
+            GUI.Label(new Rect(x, y + 6, 60, 24), "Код:", small);
+            joinCode = GUI.TextField(new Rect(x + 52, y, 200, 34), joinCode, 12, new GUIStyle(GUI.skin.textField) { fontSize = 18, alignment = TextAnchor.MiddleLeft }).ToUpperInvariant();
+            if (GUI.Button(new Rect(x + 270, y, cw - 270, 34), "Войти по коду") && joinCode.Trim().Length > 0) { GUIUtility.keyboardControl = 0; JoinRoom(); }
+            y += 44;
+            if (netError != "") { Shadowed(new Rect(x, y, cw, 24), netError, small, Mat.Away); y += 28; }
+            y += 10;
             GUI.color = new Color(1, 1, 1, 0.65f);
             GUI.Label(new Rect(x, y, cw, 80), "Геймпад: стик — бег, A — удар (держи), X — навес (держи), B — рывок, Y — способность, у Вихря LB/RB — кручёный, Start — пауза.\nКлавиатура: WASD, J удар, L навес, K рывок, U способность (у Вихря U/I), Esc пауза.", small);
             GUI.color = Color.white;
