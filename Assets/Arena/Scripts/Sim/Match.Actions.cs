@@ -13,7 +13,7 @@ namespace Arena.Sim
             if (p.KickCd > 0 || p.Stun > 0 || p.FireT > 0 || b.Hook != null || b.Z > LOW) return false;
             if (b.Owner != null && b.Owner != p) return false;
             if (b.Owner == null && M.Len(b.X - p.X, b.Y - p.Y) > R + BR + 18) return false;
-            p.KickCd = 0.22f; b.Last = p; b.LastHow = "удар"; b.Spin = 0; Reveal(p); // a shot gives Тень away
+            p.KickCd = 0.22f; b.Last = p; b.Kicker = p; b.LastHow = "удар"; b.Spin = 0; Reveal(p); // a shot gives Тень away
             if (b.Owner != p) p.GrabCd = Math.Max(p.GrabCd, 0.3f);
             float pow = T.kick * (0.7f + (T.charge - 0.7f) * charge);
             Rumble(p, charge > 0.6f ? 0.35f : 0.2f);
@@ -89,7 +89,7 @@ namespace Arena.Sim
         {
             var b = Ball;
             if (b.Owner == p) ReleaseBall(p, 0.45f); else p.GrabCd = 0.45f;
-            p.KickCd = 0.25f; p.Flash = 0.15f; b.Last = p; b.LastHow = "навес"; b.Spin = 0; Reveal(p);
+            p.KickCd = 0.25f; p.Flash = 0.15f; b.Last = p; b.Kicker = p; b.LastHow = "навес"; b.Spin = 0; Reveal(p);
             b.X = p.X + a.x * (R + BR + 2); b.Y = p.Y + a.y * (R + BR + 2);
             var v = LobVel(D - (R + BR + 2));
             b.Vx = a.x * v.vh; b.Vy = a.y * v.vh; b.Vz = v.vz; b.Z = 1;
@@ -229,7 +229,7 @@ namespace Arena.Sim
             float dx = p.Fx, dy = p.Fy;
             if (b.Owner == p) ReleaseBall(p, 0.4f); else p.GrabCd = 0.4f;
             b.X = p.X + dx * (R + BR + 2); b.Y = p.Y + dy * (R + BR + 2);
-            b.Vx = dx * T.firePow; b.Vy = dy * T.firePow; b.Fire = 1.8f; b.FireBy = p; b.Last = p; b.LastHow = "огненный удар"; b.Spin = 0; b.FireGrace = 0.2f;
+            b.Vx = dx * T.firePow; b.Vy = dy * T.firePow; b.Fire = 1.8f; b.FireBy = p; b.Last = p; b.Kicker = p; b.LastHow = "огненный удар"; b.Spin = 0; b.FireGrace = 0.2f;
             p.FireCd = T.fireCd; p.Flash = 0.2f; Shake(6); Rumble(p, 0.6f); Impact(b.X, b.Y, 1.2f);
             Burst(b.X, b.Y, FxColor.Fire, 16, 1.2f);
         }

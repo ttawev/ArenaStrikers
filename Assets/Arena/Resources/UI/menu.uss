@@ -1,0 +1,374 @@
+:root {
+  --bg-panel: rgba(7, 12, 30, 0.86);
+  --bg-item: rgba(255, 255, 255, 0.06);
+  --bg-item-focus: rgba(255, 255, 255, 0.14);
+  --line: rgba(130, 170, 255, 0.22);
+  --text: rgb(232, 240, 255);
+  --muted: rgb(143, 163, 196);
+  --accent: rgb(255, 178, 30);
+  --accent-dark: rgb(26, 18, 4);
+  --home: rgb(46, 125, 255);
+  --away: rgb(255, 79, 114);
+  --bad: rgb(255, 110, 120);
+}
+
+.menu-root {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  color: var(--text);
+  font-size: 22px;
+}
+
+.screen {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+}
+
+.hidden {
+  display: none;
+}
+
+.side {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 640px;
+  padding: 64px 56px 40px 80px;
+  background-color: var(--bg-panel);
+  border-right-width: 2px;
+  border-right-color: var(--line);
+}
+
+.side-wide {
+  width: 760px;
+}
+
+.title-big {
+  font-size: 96px;
+  color: var(--text);
+  -unity-text-align: middle-left;
+  margin-bottom: -18px;
+}
+
+.title-accent {
+  font-size: 58px;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+
+.subtitle {
+  font-size: 22px;
+  color: var(--muted);
+  margin-bottom: 48px;
+}
+
+.header {
+  font-size: 44px;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+
+.note {
+  font-size: 20px;
+  color: var(--muted);
+  white-space: normal;
+  margin-bottom: 18px;
+}
+
+.spacer {
+  flex-grow: 1;
+}
+
+.item {
+  flex-direction: row;
+  align-items: center;
+  min-height: 64px;
+  margin-bottom: 10px;
+  padding: 0 22px;
+  background-color: var(--bg-item);
+  border-left-width: 6px;
+  border-left-color: rgba(0, 0, 0, 0);
+  border-top-left-radius: 4px;
+  border-bottom-left-radius: 4px;
+  border-top-right-radius: 10px;
+  border-bottom-right-radius: 10px;
+  transition-duration: 0.12s;
+}
+
+.item.focused {
+  background-color: var(--bg-item-focus);
+  border-left-color: var(--accent);
+  translate: 12px 0;
+}
+
+.item-label {
+  font-size: 30px;
+  color: var(--text);
+}
+
+.item.focused .item-label {
+  color: var(--accent);
+}
+
+.item-primary {
+  background-color: var(--accent);
+  min-height: 76px;
+}
+
+.item-primary .item-label {
+  color: var(--accent-dark);
+  font-size: 34px;
+}
+
+.item-primary.focused {
+  background-color: rgb(255, 205, 90);
+  border-left-color: var(--text);
+}
+
+.item-primary.focused .item-label {
+  color: var(--accent-dark);
+}
+
+.item-small {
+  min-height: 48px;
+}
+
+.item-small .item-label {
+  font-size: 24px;
+}
+
+.selector-title {
+  font-size: 20px;
+  color: var(--muted);
+  width: 150px;
+}
+
+.selector-arrow {
+  font-size: 34px;
+  color: var(--muted);
+  width: 44px;
+  -unity-text-align: middle-center;
+}
+
+.item.focused .selector-arrow {
+  color: var(--accent);
+}
+
+.selector-value {
+  flex-grow: 1;
+  font-size: 28px;
+  -unity-text-align: middle-center;
+}
+
+.hero-row {
+  min-height: 70px;
+  padding-left: 0;
+}
+
+.hero-chip {
+  width: 12px;
+  height: 46px;
+  margin: 0 18px 0 14px;
+  border-top-left-radius: 3px;
+  border-bottom-left-radius: 3px;
+  border-top-right-radius: 3px;
+  border-bottom-right-radius: 3px;
+}
+
+.hero-texts {
+  flex-grow: 1;
+}
+
+.hero-name {
+  font-size: 30px;
+}
+
+.hero-role {
+  font-size: 18px;
+  color: var(--muted);
+}
+
+.hero-row.selected {
+  background-color: rgba(255, 178, 30, 0.16);
+}
+
+.info-card {
+  position: absolute;
+  right: 64px;
+  bottom: 56px;
+  width: 560px;
+  padding: 28px 32px;
+  background-color: var(--bg-panel);
+  border-width: 2px;
+  border-color: var(--line);
+  border-top-left-radius: 14px;
+  border-bottom-left-radius: 14px;
+  border-top-right-radius: 14px;
+  border-bottom-right-radius: 14px;
+}
+
+.info-name {
+  font-size: 64px;
+  margin-bottom: 2px;
+}
+
+.info-role {
+  font-size: 20px;
+  color: var(--muted);
+  margin-bottom: 16px;
+}
+
+.info-ability {
+  font-size: 28px;
+  color: var(--accent);
+  margin-bottom: 6px;
+}
+
+.info-desc {
+  font-size: 22px;
+  color: var(--text);
+  white-space: normal;
+}
+
+.field-row {
+  flex-direction: row;
+  align-items: center;
+  min-height: 64px;
+  margin-bottom: 10px;
+  padding: 0 22px;
+  background-color: var(--bg-item);
+  border-left-width: 6px;
+  border-left-color: rgba(0, 0, 0, 0);
+  border-top-right-radius: 10px;
+  border-bottom-right-radius: 10px;
+  transition-duration: 0.12s;
+}
+
+.field-row.focused {
+  background-color: var(--bg-item-focus);
+  border-left-color: var(--accent);
+}
+
+.text-field {
+  flex-grow: 1;
+  margin: 0;
+}
+
+.text-field .unity-base-text-field__input {
+  background-color: rgba(0, 0, 0, 0.35);
+  border-width: 1px;
+  border-color: var(--line);
+  border-top-left-radius: 6px;
+  border-bottom-left-radius: 6px;
+  border-top-right-radius: 6px;
+  border-bottom-right-radius: 6px;
+  padding: 6px 12px;
+  font-size: 28px;
+  color: var(--text);
+  --unity-cursor-color: rgb(255, 178, 30);
+  --unity-selection-color: rgba(255, 178, 30, 0.35);
+}
+
+.divider {
+  font-size: 18px;
+  color: var(--muted);
+  -unity-text-align: middle-center;
+  margin: 12px 0 14px 0;
+}
+
+.error {
+  font-size: 20px;
+  color: var(--bad);
+  white-space: normal;
+  margin-bottom: 10px;
+}
+
+.code {
+  font-size: 72px;
+  color: var(--accent);
+  letter-spacing: 12px;
+  margin-bottom: 8px;
+}
+
+.roster {
+  margin: 8px 0 18px 0;
+}
+
+.roster-row {
+  flex-direction: row;
+  align-items: center;
+  min-height: 44px;
+  margin-bottom: 6px;
+  padding-right: 14px;
+  background-color: rgba(255, 255, 255, 0.05);
+  border-top-right-radius: 8px;
+  border-bottom-right-radius: 8px;
+}
+
+.roster-team {
+  width: 8px;
+  height: 44px;
+  margin-right: 14px;
+}
+
+.team-home {
+  background-color: var(--home);
+}
+
+.team-away {
+  background-color: var(--away);
+}
+
+.roster-name {
+  flex-grow: 1;
+  font-size: 22px;
+}
+
+.roster-hero {
+  width: 130px;
+  font-size: 20px;
+  color: var(--muted);
+}
+
+.roster-ping {
+  width: 110px;
+  font-size: 18px;
+  color: var(--muted);
+  -unity-text-align: middle-right;
+}
+
+.status {
+  font-size: 36px;
+  color: var(--text);
+  -unity-text-align: middle-center;
+  white-space: normal;
+  margin-bottom: 24px;
+}
+
+.center-box {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(4, 8, 20, 0.7);
+}
+
+.center-box .item {
+  width: 420px;
+}
+
+.hints {
+  font-size: 18px;
+  color: var(--muted);
+  margin-top: 12px;
+}

@@ -17,7 +17,7 @@ using Object = UnityEngine.Object;
 
 namespace Arena.Game
 {
-    public class LobbySeat { public ulong ClientId; public int Slot; public string Name = ""; public Hero Hero; public Team Team; }
+    public class LobbySeat { public ulong ClientId; public int Slot; public string Name = ""; public Hero Hero; public Team Team; public int Ping = -1; }
 
     public class Online
     {
@@ -206,7 +206,7 @@ namespace Arena.Game
             var to = Others(); if (to.Count == 0) return;
             using var w = new FastBufferWriter(256, Allocator.Temp, 4096);
             w.WriteValueSafe((byte)Mode); w.WriteValueSafe((byte)Difficulty); w.WriteValueSafe((byte)Roster.Count);
-            foreach (var s in Roster) { w.WriteValueSafe(s.ClientId); w.WriteValueSafe((byte)s.Slot); w.WriteValueSafe(s.Name ?? ""); w.WriteValueSafe((byte)s.Hero); w.WriteValueSafe((byte)s.Team); }
+            foreach (var s in Roster) { w.WriteValueSafe(s.ClientId); w.WriteValueSafe((byte)s.Slot); w.WriteValueSafe(s.Name ?? ""); w.WriteValueSafe((byte)s.Hero); w.WriteValueSafe((byte)s.Team); w.WriteValueSafe((short)s.Ping); }
             nm.CustomMessagingManager.SendNamedMessage("roster", to, w, NetworkDelivery.ReliableSequenced);
         }
 
@@ -218,7 +218,7 @@ namespace Arena.Game
             for (int i = 0; i < n; i++)
             {
                 var s = new LobbySeat();
-                r.ReadValueSafe(out s.ClientId); r.ReadValueSafe(out byte slot); r.ReadValueSafe(out s.Name); r.ReadValueSafe(out byte hero); r.ReadValueSafe(out byte team);
+                r.ReadValueSafe(out s.ClientId); r.ReadValueSafe(out byte slot); r.ReadValueSafe(out s.Name); r.ReadValueSafe(out byte hero); r.ReadValueSafe(out byte team); r.ReadValueSafe(out short ping); s.Ping = ping;
                 s.Slot = slot; s.Hero = (Hero)hero; s.Team = (Team)team;
                 Roster.Add(s);
                 if (s.ClientId == nm.LocalClientId) MySlot = slot;
@@ -345,6 +345,26 @@ namespace Arena.Game
                 foreach (var e in s.Events) fx(NetSnapshot.EventFor(m, e));
                 lastEventT = s.T;
             }
+        }
+
+        // ---------- пинг ----------
+        float pingT;
+        /// <summary>Время туда-обратно до игрока (через сервер-посредник Unity), мс; -1 — неизвестно.</summary>
+        int Rtt(ulong id)
+        {
+            try { var t = nm != null ? nm.NetworkConfig.NetworkTransport : null; return t != null && nm.IsListening ? (int)t.GetCurrentRtt(id) : -1; }
+            catch { return -1; }
+        }
+        /// <summary>Свой пинг до хоста (у хоста — 0).</summary>
+        public int MyPing => IsHost ? 0 : Rtt(NetworkManager.ServerClientId);
+
+        /// <summary>Хост: раз в секунду мерит пинг каждого друга и рассылает состав с пингами.</summary>
+        public void Tick(float dt)
+        {
+            if (!IsHost || State == Phase.Connecting || State == Phase.Failed) return;
+            pingT -= dt; if (pingT > 0) return; pingT = 1;
+            foreach (var s in Roster) s.Ping = s.Slot == 0 ? 0 : Rtt(s.ClientId);
+            SendRoster();
         }
 
         public bool Connected => nm != null && nm.IsListening && (IsHost || nm.IsConnectedClient);

@@ -7,6 +7,15 @@ namespace Arena.Sim
         public bool WantKick;
         public float Kx, Ky, ChargeTo;
         public int Curve; // -1 / +1: the planned kick is a curve shot
+        public int Intent;     // что задумано этим ударом: см. BotStats.*
+        public float KickWait; // сколько бот ждёт, пока развернётся для удара
+    }
+
+    /// <summary>Счётчики для «лаборатории ботов» (Editor → Arena → Лаборатория ботов): пасы, удары, автоголы.</summary>
+    public class BotStats
+    {
+        public const int None = 0, PassGround = 1, PassLob = 2, Shot = 3, Clear = 4;
+        public int PassGroundTry, PassGroundOk, PassLobTry, PassLobOk, Shots, Clears, OwnGoals, Deflected, Goals, Saves, TurnWaits, KickCancels;
     }
 
     public class SimPlayer
@@ -16,6 +25,7 @@ namespace Arena.Sim
         public Hero Hero;
         public int HumanSlot = -1;   // -1 = bot; 0.. = which local controller drives this hero
         public bool Dummy;           // training mannequin
+        public bool Keeper;          // сейчас — последний защитник у ворот (меняется по ходу игры)
         public float HomeX, HomeY;   // where a mannequin walks back to
 
         public float X, Y, Vx, Vy, Fx, Fy = -1;
@@ -44,7 +54,8 @@ namespace Arena.Sim
     {
         public float X = Field.FW / 2, Y = Field.FH / 2, Z, Vx, Vy, Vz;
         public SimPlayer Owner, Last, FireBy;
-        public string LastHow = ""; // как Last коснулся мяча последним — для журнала автоголов
+        public string LastHow = "";
+        public SimPlayer Kicker; // последний, кто ОСОЗНАННО сыграл мячом (удар, навес, приём); рикошеты не в счёт // как Last коснулся мяча последним — для журнала автоголов
         public float Lock, Spin, Fire, FireGrace;
         public float GlueAng; // where around the carrier the ball sits; rolls to the front after a reception
         public Hook Hook; // set while a hook is reeling the ball in

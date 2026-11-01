@@ -27,6 +27,8 @@ namespace Arena.Sim
         public MatchPhase Phase = MatchPhase.Playing;
         /// <summary>Строки для журнала разработчика (автоголы); отображение выводит их в Logs/arena-runtime.log и очищает.</summary>
         public readonly List<string> Log = new List<string>();
+        public readonly BotStats Stats = new BotStats();
+        SimPlayer passFrom; int passType; // последний пас бота, ещё не принятый
 
         readonly Random rng;
         float Rand() => (float)rng.NextDouble();
@@ -83,7 +85,22 @@ namespace Arena.Sim
         {
             ScoreHome = ScoreAway = 0; Clock = MATCH_TIME; Phase = MatchPhase.Playing; Banner = "";
             Kickoff();
+            foreach (var p in Players) p.Keeper = false; // постоянного вратаря нет: ворота закрывает последний защитник, пока команда обороняется
             Freeze = Mode == GameMode.Training ? 0.3f : 1.2f;
+        }
+
+        /// <summary>В 4 на 4 у каждой команды вратарь — самый задний бот на расстановке (живые игроки вратарями не бывают).</summary>
+        void AssignKeepers()
+        {
+            foreach (var p in Players) p.Keeper = false;
+            if (Mode != GameMode.FourVsFour) return;
+            foreach (var team in new[] { Team.Home, Team.Away })
+            {
+                SimPlayer best = null;
+                foreach (var p in Players)
+                    if (p.Team == team && !p.IsHuman && !p.Dummy && (best == null || DepOf(p, p.Y) < DepOf(best, best.Y))) best = p;
+                if (best != null) best.Keeper = true;
+            }
         }
 
         /// <summary>Какой слот управления у этого компьютера (0 — хост или одиночная игра; в онлайне у друзей 1, 2, ...).</summary>
@@ -142,7 +159,7 @@ namespace Arena.Sim
             var b = Ball;
             b.X = FW / 2; b.Y = FH / 2; b.Vx = b.Vy = 0; b.Owner = null; b.Lock = 0;
             foreach (var p in Players) { p.ResetForKickoff(); p.Brain.T = Rand() * 0.1f; }
-            Hooks.Clear(); Walls.Clear(); b.Z = b.Vz = 0; b.Spin = 0; b.Last = null; b.Hook = null; b.Fire = 0; b.FireBy = null;
+            Hooks.Clear(); Walls.Clear(); b.Z = b.Vz = 0; b.Spin = 0; b.Last = null; b.Kicker = null; b.Hook = null; b.Fire = 0; b.FireBy = null;
             var P = Players;
             switch (Mode)
             {
@@ -323,7 +340,7 @@ namespace Arena.Sim
         // a dashes into b along (nx,ny): b is knocked away, stunned, and loses the ball
         void DashHit(SimPlayer a, SimPlayer b, float nx, float ny)
         {
-            if (Ball.Owner == b) { ReleaseBall(b, 0.9f); Ball.Vx = b.Vx * 0.5f + nx * 260; Ball.Vy = b.Vy * 0.5f + ny * 260; }
+            if (Ball.Owner == b) { ReleaseBall(b, 0.9f); Ball.Vx = b.Vx * 0.5f + nx * 260; Ball.Vy = b.Vy * 0.5f + ny * 260; Ball.Last = a; Ball.Kicker = a; Ball.LastHow = "выбил рывком"; }
             Impact(b.X, b.Y, 0.8f);
             Reveal(b);
             b.Stun = 0.75f; b.Vx = nx * 620; b.Vy = ny * 620; b.DashT = 0.12f;
@@ -337,7 +354,13 @@ namespace Arena.Sim
         void TakeBall(SimPlayer p)
         {
             Ball.GlueAng = MathF.Atan2(Ball.Y - p.Y, Ball.X - p.X); // received from the side or back: rolls around to the front
-            Ball.Owner = p; Ball.Last = p; Ball.LastHow = "приём"; Ball.Spin = 0; Ball.Lock = 0.3f; p.Charging = false; p.Charge = 0; Rumble(p, 0.15f);
+            if (p.Keeper && Ball.Owner == null && (p.Team == Team.Home ? Ball.Vy : -Ball.Vy) > 350) Stats.Saves++;
+            if (passFrom != null)
+            {   // пас бота дошёл до своего / перехвачен — для статистики
+                if (p != passFrom && p.Team == passFrom.Team) { if (passType == BotStats.PassGround) Stats.PassGroundOk++; else Stats.PassLobOk++; }
+                passFrom = null;
+            }
+            Ball.Owner = p; Ball.Last = p; Ball.Kicker = p; Ball.LastHow = "приём"; Ball.Spin = 0; Ball.Lock = 0.3f; p.Charging = false; p.Charge = 0; Rumble(p, 0.15f);
             Events.Add(new SimEvent { Kind = FxKind.Receive, X = Ball.X, Y = Ball.Y, Player = p });
         }
 
@@ -381,8 +404,10 @@ namespace Arena.Sim
                 float rvx = b.Vx - p.Vx, rvy = b.Vy - p.Vy, vn = rvx * nx + rvy * ny;
                 if (vn < 0)
                 { // a real impact (not the kicker running after his own ball) kills the spin
-                    b.Spin = 0; b.Last = p; b.LastHow = p.DashT > 0 ? "отскок от рывка" : canGrab ? "отскок от ног" : "отскок от тела (спиной/боком)";
-                    float e = p.DashT > 0 ? 1.1f : (canGrab ? 0.05f : 0.35f);
+                    if (p.Keeper && (p.Team == Team.Home ? b.Vy : -b.Vy) > 350) Stats.Saves++; // отбил удар
+                    b.Spin = 0; b.Last = p; b.LastHow = p.Stun > 0 ? "отскок от сбитого игрока" : p.DashT > 0 ? "отскок от рывка" : canGrab ? "отскок от ног" : "отскок от тела (спиной/боком)";
+                    // сбитый (оглушённый) игрок летит телом — мяч от него отскакивает мягко, а не как от рывка
+                    float e = p.Stun > 0 ? 0.25f : p.DashT > 0 ? 1.1f : (canGrab ? 0.05f : 0.35f);
                     b.Vx -= (1 + e) * vn * nx; b.Vy -= (1 + e) * vn * ny;
                     if (canGrab && p.DashT <= 0) { b.Vx = p.Vx + (b.Vx - p.Vx) * 0.4f; b.Vy = p.Vy + (b.Vy - p.Vy) * 0.4f; } // front touch: deaden at the feet
                 }
@@ -485,9 +510,19 @@ namespace Arena.Sim
             bool training = Mode == GameMode.Training;
             if (!training || team == Team.Home) { if (team == Team.Home) ScoreHome++; else ScoreAway++; }
             var lt = Ball.Last;
-            if (lt != null && lt.Team != team && !training)
-                Log.Add("АВТОГОЛ: " + lt.Hero + " (" + lt.Team + ", " + (lt.IsHuman ? "игрок" : "бот") + "), как: " + Ball.LastHow
-                        + "; скорость мяча " + (int)M.Len(Ball.Vx, Ball.Vy) + ", время " + (int)(MATCH_TIME - Clock) + " с");
+            Stats.Goals++;
+            var kk = Ball.Kicker;
+            if (!training && kk != null && kk.Team != team)
+            {   // последним осознанно играл мячом защищавшийся — настоящий автогол
+                Stats.OwnGoals++;
+                Log.Add("АВТОГОЛ: " + kk.Hero + " (" + kk.Team + ", " + (kk.IsHuman ? "игрок" : "бот") + "), последнее касание: " + Ball.LastHow
+                        + (lt != kk && lt != null ? " (" + lt.Hero + ")" : "") + "; скорость мяча " + (int)M.Len(Ball.Vx, Ball.Vy) + ", время " + (int)(MATCH_TIME - Clock) + " с");
+            }
+            else if (!training && lt != null && lt.Team != team)
+            {   // били соперники, мяч лишь задел защитника — гол после рикошета
+                Stats.Deflected++;
+                Log.Add("рикошет: удар " + (kk != null ? kk.Hero.ToString() : "?") + ", задел " + lt.Hero + " (" + Ball.LastHow + ")");
+            }
             BannerTeam = team;
             Banner = team == Team.Home ? "ГОЛ!" : training ? "АВТОГОЛ" : "ПРОПУСТИЛ";
             Freeze = training ? 0.8f : 1.6f;

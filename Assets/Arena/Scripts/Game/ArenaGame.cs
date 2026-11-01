@@ -6,7 +6,7 @@ using UnityEngine.InputSystem;
 
 namespace Arena.Game
 {
-    public class ArenaGame : MonoBehaviour
+    public class ArenaGame : MonoBehaviour, IMenuHost
     {
         [Tooltip("Все цифры механики. Можно менять прямо во время игры.")]
         public Tuning tuning = new Tuning();
@@ -63,6 +63,9 @@ namespace Arena.Game
         // онлайн
         Online net; string netName = "", joinCode = "", netError = ""; Team netTeam = Team.Home; bool netMenu;
         bool IsClient => net != null && !net.IsHost;
+        // меню на UI Toolkit и подиум с героем
+        MenuUI ui; HeroShowcase showcase; float attractAcc; Quaternion camRot = Quaternion.identity;
+        static readonly InputCommand[] noInput = new InputCommand[8];
         bool IsHostOnline => net != null && net.IsHost;
 
         void Awake()
@@ -81,9 +84,10 @@ namespace Arena.Game
             audioSrc = gameObject.AddComponent<AudioSource>(); audioSrc.playOnAwake = false; audioSrc.spatialBlend = 0;
             receiveClip = SoundFx.Receive();
             match = new Match(tuning, System.Environment.TickCount);
-            match.Setup(ModeList[modeSel], HeroList[heroSel], diffSel); // something to look at behind the menu
-            view.Rebuild(match);
-            camPos = TargetCamPos(true); camTilt = cameraTilt;
+            showcase = new HeroShowcase(transform);
+            ui = new MenuUI(this, transform);
+            GoToMenu(MenuUI.Screen.Main);
+            camPos = TargetCamPos(true); camTilt = cameraTilt; camRot = Quaternion.Euler(camTilt, 0, 0);
         }
 
         void StartMatch()
@@ -95,7 +99,67 @@ namespace Arena.Game
             view.Rebuild(match);
             input.ClearPending(); acc = 0;
             goalReplay.End(match); goalReplay.Clear(); replayIn = 0; Time.timeScale = 1;
+            ui.Show(MenuUI.Screen.None); showcase.Hide(); view.ShowYouMark = true;
             state = State.Playing;
+        }
+
+        /// <summary>В меню: на фоне играют боты (без людей), экран меню — указанный.</summary>
+        void GoToMenu(MenuUI.Screen screen)
+        {
+            Time.timeScale = 1; input.StopRumble(); netMenu = false;
+            match.T = tuning; match.LocalSlot = 0;
+            match.Setup(GameMode.FourVsFour, HeroList[heroSel], 1);
+            foreach (var p in match.Players) p.HumanSlot = -1; // все — боты
+            view.Rebuild(match); view.ShowYouMark = false;
+            goalReplay.End(match); goalReplay.Clear(); replayIn = 0;
+            attractAcc = 0; state = State.Menu;
+            ui.Show(screen);
+        }
+
+        /// <summary>Фоновый матч ботов за меню (без вибрации и тряски камеры).</summary>
+        void AttractStep(float dt)
+        {
+            attractAcc += dt;
+            int n = 0;
+            while (attractAcc >= DT && n++ < 12)
+            {
+                match.Step(DT, noInput); attractAcc -= DT;
+                foreach (var e in match.Events)
+                {
+                    if (e.Kind == FxKind.Burst) view.Burst(e.X, e.Y, Mat.Of(e.Color), e.Count, e.Amount);
+                    else if (e.Kind == FxKind.Goal) view.Burst(e.X, e.Y, e.Team == Team.Home ? Mat.Home : Mat.Away, 60, 1.6f);
+                    else if (e.Kind == FxKind.Impact) view.Impact(e.X, e.Y, e.Amount);
+                }
+                match.Events.Clear();
+                if (match.Phase == MatchPhase.Ended) match.NewMatch();
+            }
+            if (attractAcc > DT) attractAcc = 0;
+        }
+
+        // ---------- меню: что оно просит у игры ----------
+        int IMenuHost.HeroIndex { get => heroSel; set { heroSel = value; PlayerPrefs.SetInt("arena.hero", value); } }
+        int IMenuHost.ModeIndex { get => modeSel; set { modeSel = value; PlayerPrefs.SetInt("arena.mode", value); } }
+        int IMenuHost.DiffIndex { get => diffSel; set { diffSel = value; PlayerPrefs.SetInt("arena.diff", value); } }
+        string IMenuHost.PlayerName { get => netName; set { netName = value ?? ""; PlayerPrefs.SetString("arena.name", netName); } }
+        string IMenuHost.JoinCode { get => joinCode; set => joinCode = value ?? ""; }
+        string IMenuHost.NetError => netError;
+        Online IMenuHost.Net => net;
+        Team IMenuHost.RoomTeam => netTeam;
+        void IMenuHost.StartOffline() => StartMatch();
+        void IMenuHost.CreateRoom() => CreateRoom();
+        void IMenuHost.JoinRoom() => JoinRoom();
+        void IMenuHost.LeaveRoom() => ExitOnline();
+        void IMenuHost.SetRoomHero(int i) { heroSel = i; PlayerPrefs.SetInt("arena.hero", i); net?.SetMine(HeroList[i], netTeam); }
+        void IMenuHost.SetRoomTeam(Team t) { netTeam = t; net?.SetMine(HeroList[heroSel], t); }
+        void IMenuHost.SetRoomRules(GameMode m, int d) => net?.SetMode(m, d);
+        void IMenuHost.StartRoomMatch() { if (IsHostOnline && net.State == Online.Phase.Lobby) StartOnlineMatch(); }
+        void IMenuHost.Quit()
+        {
+#if UNITY_EDITOR
+            UnityEditor.EditorApplication.isPlaying = false;
+#else
+            Application.Quit();
+#endif
         }
 
         void Update()
@@ -103,7 +167,7 @@ namespace Arena.Game
             float dt = Mathf.Min(Time.unscaledDeltaTime, 0.05f);
             MenuInput();
             if (state == State.Playing || state == State.Replay) ClipKeys();
-            if (net != null) NetUpdate();
+            if (net != null) NetUpdate(dt);
             if (state == State.Playing && IsClient)
             {   // друг: матч считает хост, мы шлём ввод и показываем его снимки
                 input.Poll(match.Local.Hero);
@@ -138,7 +202,14 @@ namespace Arena.Game
                 if (!goalReplay.Tick(match, dt * replaySpeed, e => Fx(e, false))) EndReplay();
                 match.Events.Clear();
             }
+            else if (state == State.Menu || state == State.Lobby) AttractStep(dt);
             else match.Events.Clear();
+            if (state == State.Menu || state == State.Lobby)
+            {
+                ui.Tick(dt);
+                if (ui.Showcase) { showcase.Show(HeroList[heroSel], state == State.Lobby ? netTeam : Team.Home); showcase.Tick(dt, cam.transform.position); }
+                else showcase.Hide();
+            }
             if (IsHostOnline && (state == State.Playing || state == State.Ended)) net.HostTick(match, simTime, dt);
             foreach (var line in match.Log) Debug.LogWarning("[Arena] " + line); // автоголы — в Logs/arena-runtime.log
             match.Log.Clear();
@@ -222,29 +293,15 @@ namespace Arena.Game
             bool pause = (gp != null && gp.startButton.wasPressedThisFrame) || (kb != null && (kb.escapeKey.wasPressedThisFrame || kb.pKey.wasPressedThisFrame));
             switch (state)
             {
-                case State.Menu:
-                    if (gp != null)
-                    {
-                        if (gp.dpad.left.wasPressedThisFrame) heroSel = (heroSel + HeroList.Length - 1) % HeroList.Length;
-                        if (gp.dpad.right.wasPressedThisFrame) heroSel = (heroSel + 1) % HeroList.Length;
-                        if (gp.dpad.up.wasPressedThisFrame) modeSel = (modeSel + 3) % 4;
-                        if (gp.dpad.down.wasPressedThisFrame) modeSel = (modeSel + 1) % 4;
-                        if (gp.leftShoulder.wasPressedThisFrame) diffSel = Mathf.Max(0, diffSel - 1);
-                        if (gp.rightShoulder.wasPressedThisFrame) diffSel = Mathf.Min(2, diffSel + 1);
-                    }
-                    if (confirm || (gp != null && gp.startButton.wasPressedThisFrame)) StartMatch();
-                    break;
+                case State.Menu: break; // меню на UI Toolkit само читает геймпад и клавиатуру
                 case State.Playing:
                     if (net != null) { if (pause) netMenu = !netMenu; else if (netMenu && back) ExitOnline(); } // онлайн матч не ставится на паузу
                     else if (pause) { state = State.Paused; input.StopRumble(); }
                     break;
-                case State.Lobby:
-                    if (back) ExitOnline();
-                    else if (confirm && IsHostOnline && net.State == Online.Phase.Lobby) StartOnlineMatch();
-                    break;
+                case State.Lobby: break;
                 case State.Paused:
                     if (pause || confirm) { state = State.Playing; input.ClearPending(); acc = 0; }
-                    else if (back) state = State.Menu;
+                    else if (back) GoToMenu(MenuUI.Screen.Main);
                     break;
                 case State.Replay:
                     if (confirm || pause || back) EndReplay(); // пропустить повтор
@@ -252,7 +309,7 @@ namespace Arena.Game
                 case State.Ended:
                     if (net != null) { if (confirm && IsHostOnline) StartOnlineMatch(); else if (back) ExitOnline(); }
                     else if (confirm) StartMatch();
-                    else if (back) state = State.Menu;
+                    else if (back) GoToMenu(MenuUI.Screen.Main);
                     break;
             }
         }
@@ -261,7 +318,7 @@ namespace Arena.Game
         Vector3 TargetCamPos(bool snap)
         {
             var you = match.Local; var b = match.Ball;
-            float wy = state == State.Replay ? 0.1f : clipCam ? 0.45f : 0.6f; // повтор и съёмка — больше на мяч
+            float wy = state == State.Replay ? 0.1f : state == State.Menu || state == State.Lobby ? 0.2f : clipCam ? 0.45f : 0.6f; // повтор и съёмка — больше на мяч
             float tx = you.X * wy + b.X * (1 - wy), ty = you.Y * wy + b.Y * (1 - wy);
             Vector3 focus = W.Pos(tx, ty);
             // keep the view over the pitch
@@ -277,12 +334,22 @@ namespace Arena.Game
 
         void UpdateCamera(float dt)
         {
+            if ((state == State.Menu || state == State.Lobby) && ui.Showcase)
+            {   // экран выбора героя: камера у подиума
+                HeroShowcase.CameraPose(out var sp, out var sr);
+                float k = 1 - Mathf.Exp(-4 * dt);
+                camPos = Vector3.Lerp(camPos, sp, k); camRot = Quaternion.Slerp(camRot, sr, k);
+                cam.fieldOfView = Mathf.Lerp(cam.fieldOfView, 40, k);
+                cam.transform.SetPositionAndRotation(camPos, camRot);
+                return;
+            }
             camTilt = Mathf.Lerp(camTilt, CamTiltTarget, 1 - Mathf.Exp(-4 * dt));
             var target = TargetCamPos(false);
             camPos = Vector3.Lerp(camPos, target, 1 - Mathf.Exp((state == State.Replay ? -3 : -5) * dt));
             fovPunch = Mathf.Max(0, fovPunch - dt * 18);
             cam.fieldOfView = cameraFov - fovPunch;
-            cam.transform.rotation = Quaternion.Euler(camTilt, 0, 0);
+            camRot = Quaternion.Slerp(camRot, Quaternion.Euler(camTilt, 0, 0), 1 - Mathf.Exp(-6 * dt));
+            cam.transform.rotation = camRot;
             Vector3 jitter = shake > 0 ? new Vector3(Random.value - 0.5f, 0, Random.value - 0.5f) * shake * 4f * W.S : Vector3.zero;
             cam.transform.position = camPos + jitter;
             shake = Mathf.Max(0, shake - dt * 30);
@@ -312,10 +379,8 @@ namespace Arena.Game
             float w = Screen.width, h = Screen.height;
             if (state == State.Playing || state == State.Paused || state == State.Ended) { if (hudHidden) BannerOnly(w, h); else Hud(w, h); }
             if (state == State.Replay) ReplayGui(w, h);
-            if (state == State.Lobby) LobbyGui(w, h);
             if (state == State.Playing && net != null && netMenu) Panel(w, h, "Онлайн-матч идёт", "Esc / Start — вернуться в игру     B / Backspace — выйти из комнаты");
             if (toastT > 0) { var c = new Color(1, 1, 1, Mathf.Clamp01(toastT * 2)); Shadowed(new Rect(0, h * 0.08f, w, 30), toast, mid, c); }
-            if (state == State.Menu) MenuGui(w, h);
             if (state == State.Paused) Panel(w, h, "Пауза", "A / Enter — продолжить     B / Backspace — в меню");
             if (state == State.Ended)
             {
@@ -357,6 +422,7 @@ namespace Arena.Game
             // на случай когда табло за краем кадра (камера у ближнего борта)
             if (!training) { int c = Mathf.CeilToInt(match.Clock); score += "   " + (c / 60) + ":" + (c % 60).ToString("00"); }
             Shadowed(new Rect(16, 10, w * 0.4f, 30), score, small, new Color(0.85f, 0.92f, 0.9f));
+            if (net != null) Shadowed(new Rect(16, 32, w * 0.6f, 30), NetHudText(), small, new Color(0.75f, 0.85f, 0.82f));
             if (match.Freeze > 0 && state == State.Playing)
             {
                 string text = match.Banner != "" ? BannerText() : "ВПЕРЁД";
@@ -465,7 +531,7 @@ namespace Arena.Game
             netError = ""; netTeam = Team.Home;
             net = new Online(); net.MatchStarted += OnNetStart;
             net.Host(netName, HeroList[heroSel]);
-            state = State.Lobby;
+            state = State.Lobby; ui.Show(MenuUI.Screen.Room);
         }
 
         void JoinRoom()
@@ -474,7 +540,7 @@ namespace Arena.Game
             netError = ""; netTeam = Team.Away;
             net = new Online(); net.MatchStarted += OnNetStart;
             net.Join(joinCode, netName, HeroList[heroSel]);
-            state = State.Lobby;
+            state = State.Lobby; ui.Show(MenuUI.Screen.Room);
         }
 
         void ExitOnline()
@@ -485,14 +551,13 @@ namespace Arena.Game
                 if (net.State != Online.Phase.Failed) net.Leave();
                 net = null;
             }
-            netMenu = false; Time.timeScale = 1; input.StopRumble();
-            match.T = tuning; match.Setup(ModeList[modeSel], HeroList[heroSel], diffSel); view.Rebuild(match);
-            state = State.Menu;
+            GoToMenu(MenuUI.Screen.Online);
         }
 
-        void NetUpdate()
+        void NetUpdate(float dt)
         {
             if (net.State == Online.Phase.Failed) { netError = net.Status; ExitOnline(); return; }
+            net.Tick(dt);
             if (net.IsHost)
                 while (net.LeftSlots.Count > 0)
                 {
@@ -516,6 +581,7 @@ namespace Arena.Game
             view.Rebuild(match);
             input.ClearPending(); acc = 0; hitstop = 0; goalReplay.Clear(); Time.timeScale = 1; netMenu = false;
             net.SendStart(match);
+            ui.Show(MenuUI.Screen.None); showcase.Hide(); view.ShowYouMark = true;
             state = State.Playing;
         }
 
@@ -526,7 +592,19 @@ namespace Arena.Game
             match.SetupExact(mode, seats, diff);
             view.Rebuild(match);
             input.ClearPending(); netMenu = false; Time.timeScale = 1;
+            ui.Show(MenuUI.Screen.None); showcase.Hide(); view.ShowYouMark = true;
             state = State.Playing;
+        }
+
+        static string PingText(int ms) => ms < 0 ? "пинг —" : "пинг " + ms + " мс";
+
+        /// <summary>Строка в углу: у друга — свой пинг до хоста, у хоста — пинг каждого друга.</summary>
+        string NetHudText()
+        {
+            if (!net.IsHost) return PingText(net.MyPing);
+            var sb = new System.Text.StringBuilder();
+            foreach (var st in net.Roster) if (st.Slot != 0) sb.Append(sb.Length > 0 ? " · " : "").Append(st.Name).Append(": ").Append(PingText(st.Ping));
+            return sb.Length > 0 ? sb.ToString() : "друзей в комнате нет";
         }
 
         void LobbyGui(float w, float h)
@@ -552,8 +630,9 @@ namespace Arena.Game
                 GUI.color = new Color(tc.r, tc.g, tc.b, 0.35f); GUI.DrawTexture(new Rect(x, y, cw, 30), Texture2D.whiteTexture); GUI.color = Color.white;
                 string who = (st.Slot == 0 ? "★ " : "") + st.Name + (me ? "  (ты)" : "");
                 GUI.Label(new Rect(x + 10, y + 5, cw * 0.5f, 24), who, small);
-                GUI.Label(new Rect(x + cw * 0.5f, y + 5, cw * 0.25f, 24), st.Team == Team.Home ? "Синие" : "Красные", small);
-                GUI.Label(new Rect(x + cw * 0.75f, y + 5, cw * 0.25f, 24), HeroNames[System.Array.IndexOf(HeroList, st.Hero)], small);
+                GUI.Label(new Rect(x + cw * 0.45f, y + 5, cw * 0.2f, 24), st.Team == Team.Home ? "Синие" : "Красные", small);
+                GUI.Label(new Rect(x + cw * 0.65f, y + 5, cw * 0.2f, 24), HeroNames[System.Array.IndexOf(HeroList, st.Hero)], small);
+                GUI.Label(new Rect(x + cw * 0.85f, y + 5, cw * 0.15f, 24), st.Slot == 0 ? "хост" : PingText(st.Ping), small);
                 y += 34;
             }
             y += 10;

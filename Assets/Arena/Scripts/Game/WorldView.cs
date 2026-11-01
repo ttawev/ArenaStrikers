@@ -454,7 +454,7 @@ namespace Arena.Game
             EnsureHeroes(m);
             SyncWalls(m, t);
             stadium.Sync(m, t, dt);
-            for (int i = 0; i < m.Players.Count; i++) heroes[i].Sync(m, m.Players[i], t, m.Mode != GameMode.OneVsOne && m.Mode != GameMode.Training && m.Players[i] == m.Local);
+            for (int i = 0; i < m.Players.Count; i++) heroes[i].Sync(m, m.Players[i], t, ShowYouMark && m.Mode != GameMode.OneVsOne && m.Mode != GameMode.Training && m.Players[i] == m.Local);
             if (wasInvisible.Length != m.Players.Count) wasInvisible = new bool[m.Players.Count];
             for (int i = 0; i < m.Players.Count; i++)
             {   // Тень: a big puff when vanishing, a smaller one when reappearing
@@ -534,6 +534,9 @@ namespace Arena.Game
                 if (i < n) dots[i].position = W.Pos(dotBuf[i].x, dotBuf[i].y, 0.9f);
             }
         }
+
+        /// <summary>Стрелка «это ты» над своим героем (в меню с фоновым матчем ботов — выключена).</summary>
+        public bool ShowYouMark = true;
 
         public Vector3 BallPos => ball.position;
 
