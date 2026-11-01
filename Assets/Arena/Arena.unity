@@ -193,6 +193,14 @@ MonoBehaviour:
   hitstopScale: 1
   shakeScale: 1
   fovKick: 3
+  clipDistance: 10
+  clipTilt: 48
+  replay: 1
+  replaySeconds: 3.5
+  replaySpeed: 0.5
+  replayDelay: 0.9
+  replayDistance: 8
+  replayTilt: 44
   heroArt:
     height: 1.35
     modelYaw: 0
@@ -215,12 +223,20 @@ MonoBehaviour:
     windUp: 0.35
     flutter: 22
     flutterSpeed: 11
-    glow: 2.6
-    glowFlicker: 0.18
-    bloom: 0.8
-    fireLight: 2.2
-    fireLightRange: 2.6
-    embers: 16
+    glow: 0.38
+    glowSuper: 0.83
+    glowRamp: 2
+    glowFlicker: 0.032
+    bloom: 0.08
+    fireLight: 0.16
+    fireLightRange: 0.65
+    embers: 1.9
+    frost: 7
+    hookScale: 1
+    hookPitch: -10
+    hookYaw: 0
+    hookRoll: 0
+    hookGrip: 0
     tailFlip: 1
 --- !u!4 &11679196
 Transform:
