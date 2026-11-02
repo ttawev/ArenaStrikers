@@ -63,5 +63,8 @@ namespace Arena.Sim
         [Range(120, 500)] public float tpDist = 260;
         [Tooltip("Окно возврата, с")] [Range(0.4f, 2.5f)] public float tpBack = 1.0f;
         [Range(1, 15)] public float tpCd = 6;
+
+        [Header("Матч")]
+        [Tooltip("Пауза после гола, с: герои празднуют / расстраиваются, потом разводка (в тренировке 0,8)")] [Range(0.8f, 6)] public float goalPause = 2.8f;
     }
 }

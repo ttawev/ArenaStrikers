@@ -16,7 +16,10 @@ namespace Arena.Game
         readonly Mesh arcMesh;
         float arcShown = -1;
         readonly Team team; HeroModel model; int modelHero = -1;
-        float prevKickCd, prevCharge, prevLob, prevFireT, animLock;
+        float prevKickCd, prevCharge, prevLob, prevCurve, prevFireT, animLock;
+        float prevStun, prevHookCd, prevWallCd, prevTpCd, prevInvisT, recoverT;
+        int stunKind;            // 0 — шатается, 1 — упал от рывка, 2 — упал навзничь от огня
+        HeroAnim? prevReact;     // празднует / расстроен / конец матча
 
         static Vector3 V(float x, float y, float z) => new Vector3(x * S, y * S, z * S);
 
@@ -152,6 +155,26 @@ namespace Arena.Game
             var ball = m.Ball;
             var T = HeroModel.Tune; float dt = HeroModel.FrameDt;
             float speed = new Vector2(p.Vx, p.Vy).magnitude;
+
+            // ---- после гола и в конце матча: забившая команда празднует, пропустившая расстраивается ----
+            HeroAnim? react = null;
+            if (m.Phase == MatchPhase.Ended)
+            {
+                if (m.ScoreHome != m.ScoreAway && m.Mode != GameMode.Training)
+                    react = (p.Team == Team.Home) == (m.ScoreHome > m.ScoreAway) ? HeroAnim.Celebrate : HeroAnim.Defeated;
+            }
+            else if (m.Freeze > 0 && m.Banner != "" && m.Mode != GameMode.Training && !p.Dummy)
+                react = p.Team == m.BannerTeam ? HeroAnim.Celebrate : HeroAnim.Sad;
+            if (react != null)
+            {
+                model.Play(react.Value, T.fade * 2, react != prevReact, react == HeroAnim.Celebrate ? T.celebrateSpeed : 1);
+                prevReact = react; animLock = 0; recoverT = 0;
+                FinishModel(m, p, ball, dt);
+                return;
+            }
+            prevReact = null;
+
+            // ---- удары ----
             bool kicked = p.KickCd > prevKickCd + 0.05f;
             if (p.FireT > 0 && prevFireT <= 0)
             {   // fire super-kick: the wind-up plays while the sim charges it
@@ -160,22 +183,64 @@ namespace Arena.Game
             }
             else if (kicked && p.FireT <= 0 && prevFireT <= 0)
             {
-                bool strong = prevCharge > 0.6f || prevLob > 0.6f;
+                float charge = Mathf.Max(prevCharge, prevCurve);
+                bool strong = charge > 0.6f || prevLob > 0.6f;
+                bool pass = !strong && prevLob <= 0 && charge < T.passMax;
                 if (strong) model.Play(HeroAnim.KickStrong, T.fade * 0.5f, true, T.strongSpeed, T.strongStart);
+                else if (pass) model.Play(HeroAnim.Pass, T.fade * 0.5f, true, T.passSpeed, T.passStart);
                 else model.Play(HeroAnim.Kick, T.fade * 0.5f, true, T.kickSpeed, T.kickStart);
                 animLock = T.kickHold;
             }
+            // ---- способности ----
+            else if (p.Hero == Hero.Hook && p.HookCd > prevHookCd + 0.5f) { model.Play(HeroAnim.Throw, T.fade * 0.5f, true, T.throwSpeed, T.throwStart); animLock = T.abilityHold; }
+            else if (p.Hero == Hero.Wall && p.WallCd > prevWallCd + 0.5f) { model.Play(HeroAnim.GroundPunch, T.fade * 0.5f, true, T.punchSpeed, T.punchStart); animLock = T.abilityHold; }
+            else if (p.Hero == Hero.Shade && p.InvisT > 0 && prevInvisT <= 0) { model.Play(HeroAnim.Spell, T.fade * 0.5f, true, T.spellSpeed, T.spellStart); animLock = T.abilityHold; }
+            else if (p.Hero == Hero.Teleport && p.TpCd > prevTpCd + 0.5f) { model.Play(HeroAnim.Magic, T.fade * 0.3f, true, T.magicSpeed); animLock = T.abilityHold; }
             animLock -= dt;
-            if (p.Stun > 0) model.Play(HeroAnim.Stun, T.fade);
+
+            // ---- оглушение: падение и подъём ----
+            if (p.Stun > 0 && prevStun <= 0)
+                stunKind = p.Stun < T.fallStun ? 0 : (m.T.fireStun > 0.8f && p.Stun > m.T.fireStun - 0.05f) ? 2 : 1;
+            recoverT -= dt;
+            if (p.Stun > 0)
+            {
+                animLock = 0;
+                if (stunKind == 0) model.Play(HeroAnim.Stun, T.fade);
+                else if (p.Stun > T.getUpLead)
+                {
+                    if (stunKind == 2) model.Play(HeroAnim.FallBack, T.fade * 0.5f, false, T.fallBackSpeed, T.fallBackStart);
+                    else model.Play(HeroAnim.Fall, T.fade * 0.5f, false, T.fallSpeed, T.fallStart);
+                }
+                else
+                {
+                    if (recoverT <= 0) recoverT = model.Length(HeroAnim.GetUp) * Mathf.Max(0, 0.68f - T.getUpStart) / Mathf.Max(0.1f, T.getUpSpeed);
+                    model.Play(HeroAnim.GetUp, T.fade, false, T.getUpSpeed, T.getUpStart);
+                }
+            }
+            else if (recoverT > 0 && speed < 60) model.Play(HeroAnim.GetUp, T.fade, false, T.getUpSpeed, T.getUpStart); // встаёт, если не побежал сразу
             else if (p.DashT > 0) model.Play(HeroAnim.Dash, T.fade * 0.5f, false, T.dashSpeed, T.dashStart);
             else if (animLock > 0) { }
-            else if (speed > 30) model.Play(HeroAnim.Run, T.fade, false, Mathf.Clamp(speed / T.runRef, 0.6f, 1.8f));
+            else if (speed > 30)
+            {
+                if (T.runBall && ball.Owner == p && model.Has(HeroAnim.RunBall))
+                    model.Play(HeroAnim.RunBall, T.fade, false, Mathf.Clamp(speed / T.runBallRef, 0.6f, 1.8f));
+                else if (T.dribble && ball.Owner == p && model.Has(HeroAnim.Dribble))
+                    model.Play(HeroAnim.Dribble, T.fade, false, Mathf.Clamp(speed / T.dribbleRef, 0.6f, 2.2f));
+                else model.Play(HeroAnim.Run, T.fade, false, Mathf.Clamp(speed / T.runRef, 0.6f, 1.8f));
+            }
             else model.Play(HeroAnim.Idle, T.fade);
+            if (p.Stun <= 0 && speed >= 60) recoverT = 0;
+            FinishModel(m, p, ball, dt);
+        }
+
+        void FinishModel(Match m, SimPlayer p, SimBall ball, float dt)
+        {
             bool superKick = p.FireT > 0 || (ball.Fire > 0 && ball.FireBy == p); // замах суперудара и пока его мяч горит
             model.SetHeat(superKick ? 2.6f : 1); // the super-kick flares the fire
             if (p.Hero == Hero.Hook) model.SetHookOut(m.Hooks.Exists(h => h.Owner == p));
             model.Tick(dt);
-            prevKickCd = p.KickCd; prevCharge = p.Charging ? p.Charge : 0; prevLob = p.Lobbing ? p.LobCharge : 0; prevFireT = p.FireT;
+            prevKickCd = p.KickCd; prevCharge = p.Charging ? p.Charge : 0; prevLob = p.Lobbing ? p.LobCharge : 0; prevCurve = p.Curving != 0 ? p.CurveCharge : 0; prevFireT = p.FireT;
+            prevStun = p.Stun; prevHookCd = p.HookCd; prevWallCd = p.WallCd; prevTpCd = p.TpCd; prevInvisT = p.InvisT;
         }
 
         public void SetVisible(bool on)

@@ -28,6 +28,7 @@ namespace Arena.Game
         [Tooltip("Сколько секунд до гола показывать в повторе")] [Range(1, 6)] public float replaySeconds = 3.5f;
         [Tooltip("Скорость повтора: 1 — обычная, меньше — замедленно")] [Range(0.2f, 1)] public float replaySpeed = 0.5f;
         [Tooltip("Через сколько секунд после гола начинается повтор")] [Range(0.2f, 1.5f)] public float replayDelay = 0.9f;
+        [Tooltip("Сколько секунд герои празднуют гол, прежде чем начнётся повтор (0 — сразу по «replayDelay»)")] [Range(0, 4)] public float celebrate = 2f;
         [Tooltip("Камера повтора: расстояние до поля")] [Range(4, 20)] public float replayDistance = 8;
         [Tooltip("Камера повтора: наклон")] [Range(30, 80)] public float replayTilt = 44;
 
@@ -239,7 +240,7 @@ namespace Arena.Game
                     case FxKind.Shake: shake = Mathf.Max(shake, e.Amount); break;
                     case FxKind.Goal:
                         view.Burst(e.X, e.Y, e.Team == Team.Home ? Mat.Home : Mat.Away, 60, 1.6f);
-                        if (live && replay && net == null && match.Mode != GameMode.Training && goalReplay.HasFrames) replayIn = replayDelay;
+                        if (live && replay && net == null && match.Mode != GameMode.Training && goalReplay.HasFrames) replayIn = Mathf.Max(replayDelay, celebrate);
                         break;
                     case FxKind.Rumble: if ((live || remote) && e.Player == match.Local) input.Rumble(e.Amount); break;
                     case FxKind.Denied: if ((live || remote) && e.Player == match.Local) denyFlash = 0.25f; break;

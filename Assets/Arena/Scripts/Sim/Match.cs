@@ -525,7 +525,7 @@ namespace Arena.Sim
             }
             BannerTeam = team;
             Banner = team == Team.Home ? "ГОЛ!" : training ? "АВТОГОЛ" : "ПРОПУСТИЛ";
-            Freeze = training ? 0.8f : 1.6f;
+            Freeze = training ? 0.8f : T.goalPause;
             Events.Add(new SimEvent { Kind = FxKind.Goal, Team = team, X = Ball.X, Y = M.Clamp(Ball.Y, -20, FH + 20) });
             Shake(14);
             foreach (var p in Players) if (p.IsHuman) Rumble(p, p.Team == team ? 0.7f : 0.5f);

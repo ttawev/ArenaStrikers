@@ -60,7 +60,7 @@ namespace Arena.Game
         public void Clear() { if (!Active) frames.Clear(); }
 
         // ---------- проигрывание ----------
-        Frame saved; List<Hook> savedHooks; List<IceWall> savedWalls;
+        Frame saved; List<Hook> savedHooks; List<IceWall> savedWalls; string savedBanner = "";
         float clock, endT, hold; int next;
 
         public bool Begin(Match m, float seconds, float holdEnd)
@@ -69,6 +69,7 @@ namespace Arena.Game
             saved = new Frame { P = new SimPlayer[m.Players.Count], B = (SimBall)Clone(m.Ball) };
             for (int i = 0; i < saved.P.Length; i++) saved.P[i] = (SimPlayer)Clone(m.Players[i]);
             savedHooks = new List<Hook>(m.Hooks); savedWalls = new List<IceWall>(m.Walls);
+            savedBanner = m.Banner; m.Banner = ""; // в повторе ещё не забили: герои не празднуют (HeroView смотрит на Banner)
             endT = frames[frames.Count - 1].T;
             clock = Math.Max(frames[0].T, endT - seconds);
             next = 0;
@@ -106,6 +107,7 @@ namespace Arena.Game
             CopyInto(saved.B, m.Ball);
             m.Hooks.Clear(); m.Hooks.AddRange(savedHooks);
             m.Walls.Clear(); m.Walls.AddRange(savedWalls);
+            m.Banner = savedBanner;
             Active = false; saved = null;
             frames.Clear(); hookStand.Clear(); wallStand.Clear();
         }

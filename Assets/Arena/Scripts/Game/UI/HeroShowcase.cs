@@ -14,7 +14,7 @@ namespace Arena.Game
         readonly Transform turn;
         readonly Material ringMat;
         readonly Light keyLight;
-        HeroModel model; Hero shown; Team shownTeam; bool hasModel;
+        HeroModel model; Hero shown; Team shownTeam; bool hasModel; float shownT;
         float pop, t;
 
         public HeroShowcase(Transform parent)
@@ -43,7 +43,8 @@ namespace Arena.Game
             if (model != null) Object.Destroy(model.Go);
             model = HeroModel.Create(h, team, turn);
             shown = h; shownTeam = team; hasModel = true; pop = 1;
-            if (model != null) model.Play(HeroAnim.Idle, 0.01f, true);
+            if (model != null) model.Play(HeroAnim.Celebrate, 0.01f, true); // выбрал героя — он радуется, потом встаёт в стойку
+            shownT = 0;
             var c = team == Team.Home ? Mat.Home : Mat.Away;
             ringMat.SetColor("_BaseColor", new Color(c.r, c.g, c.b, 0.95f));
         }
@@ -71,7 +72,8 @@ namespace Arena.Game
             float s = 1 + Mathf.Sin(pop * Mathf.PI) * 0.12f;
             turn.localScale = Vector3.one * s;
             turn.localPosition = Vector3.up * (Mathf.Sin(pop * Mathf.PI) * 0.12f);
-            if (model != null) { model.Play(HeroAnim.Idle, 0.15f); model.Tick(dt); }
+            shownT += dt;
+            if (model != null) { model.Play(shownT < HeroModel.Tune.showCelebrate ? HeroAnim.Celebrate : HeroAnim.ShowIdle, 0.35f); model.Tick(dt); }
         }
     }
 }

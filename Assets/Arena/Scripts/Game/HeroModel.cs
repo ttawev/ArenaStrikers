@@ -1,6 +1,6 @@
 // Rigged hero models (stage 3 art). Each hero lives in Resources/Heroes/<Folder>/:
 //   model.fbx (Mixamo, humanoid), tail.fbx (optional, Blender), albedo.png,
-//   animations are shared: Resources/Heroes/Anim/idle / run / kick / kick_strong / dash / stun .fbx (Mixamo, humanoid).
+//   animations are shared: Resources/Heroes/Anim/*.fbx (Mixamo on Y Bot, humanoid) — see ClipFile; the goal celebration is per hero (CelebrateFile).
 // Animations are blended with a small PlayableGraph driven from the sim state — no Animator Controller asset.
 using System;
 using System.Collections.Generic;
@@ -12,7 +12,17 @@ using Object = UnityEngine.Object;
 
 namespace Arena.Game
 {
-    public enum HeroAnim { Idle, Run, Kick, KickStrong, Dash, Stun }
+    public enum HeroAnim
+    {
+        Idle, Run, Kick, KickStrong, Dash, Stun,
+        RunMirror,                       // internal: played with Run half a cycle apart
+        Pass, Dribble,                   // football
+        Fall, FallBack, GetUp,           // knocked down by a dash / burnt by fire, getting up
+        Throw, GroundPunch, Spell, Magic,// abilities: hook, ice fissure, invisibility, teleport
+        Celebrate, Sad, Defeated,        // after a goal and at the end of the match
+        ShowIdle,                        // the lively stance on the hero select screen
+        RunBall,                         // running with the ball (Run Forward)
+    }
 
     [Serializable]
     public class HeroArtTuning
@@ -30,6 +40,34 @@ namespace Arena.Game
         [Range(0.3f, 3)] public float fireSpeed = 1.2f;
         [Tooltip("Рывок: с какой доли анимации подката начинать")] [Range(0, 0.9f)] public float dashStart = 0.15f;
         [Range(0.3f, 3)] public float dashSpeed = 1.6f;
+        [Header("Анимации: пас, ведение, способности")]
+        [Tooltip("Удар слабее этой доли заряда играется как пас щёчкой (а не удар с замаха)")] [Range(0, 1)] public float passMax = 0.35f;
+        [Tooltip("Пас: с какой доли анимации начинать")] [Range(0, 0.9f)] public float passStart = 0.2f;
+        [Range(0.3f, 3)] public float passSpeed = 1.5f;
+        [Tooltip("С мячом — бег Run Forward (главнее ведения)")] public bool runBall = true;
+        [Tooltip("Скорость героя, при которой бег с мячом проигрывается с обычной скоростью")] [Range(80, 500)] public float runBallRef = 210;
+        [Tooltip("Если бег с мячом выключен: вести мяч анимацией ведения Dribble (выкл — обычный бег)")] public bool dribble = true;
+        [Tooltip("Скорость героя, при которой ведение проигрывается с обычной скоростью")] [Range(80, 500)] public float dribbleRef = 190;
+        [Tooltip("Сколько держать анимацию способности, прежде чем вернуться к бегу, с")] [Range(0.1f, 2)] public float abilityHold = 0.55f;
+        [Tooltip("Багор, бросок крюка: с какой доли анимации начинать")] [Range(0, 0.9f)] public float throwStart = 0.2f;
+        [Range(0.3f, 3)] public float throwSpeed = 1.6f;
+        [Tooltip("Стена, удар по земле: с какой доли анимации начинать")] [Range(0, 0.9f)] public float punchStart = 0f;
+        [Range(0.3f, 3)] public float punchSpeed = 1.5f;
+        [Tooltip("Тень, заклинание: с какой доли анимации начинать")] [Range(0, 0.9f)] public float spellStart = 0.45f;
+        [Range(0.3f, 3)] public float spellSpeed = 1.5f;
+        [Tooltip("Миг, взмах после телепорта: скорость")] [Range(0.3f, 3)] public float magicSpeed = 1.2f;
+        [Header("Анимации: падение и подъём")]
+        [Tooltip("Оглушение длиннее этого (рывок, огонь) — герой падает; короче (крюк) — шатается")] [Range(0, 2)] public float fallStun = 0.6f;
+        [Tooltip("Падение от рывка: с какой доли анимации начинать")] [Range(0, 0.9f)] public float fallStart = 0.15f;
+        [Range(0.3f, 4)] public float fallSpeed = 1.6f;
+        [Tooltip("Падение от огня (навзничь): с какой доли анимации начинать")] [Range(0, 0.9f)] public float fallBackStart = 0.1f;
+        [Range(0.3f, 4)] public float fallBackSpeed = 1.4f;
+        [Tooltip("За сколько секунд до конца оглушения начинать вставать")] [Range(0, 1.5f)] public float getUpLead = 0.3f;
+        [Tooltip("Подъём: с какой доли анимации начинать (пропустить лежание)")] [Range(0, 0.6f)] public float getUpStart = 0.12f;
+        [Range(0.3f, 4)] public float getUpSpeed = 2.0f;
+        [Header("Анимации: гол и конец матча")]
+        [Tooltip("Скорость празднования гола")] [Range(0.3f, 2)] public float celebrateSpeed = 1f;
+        [Tooltip("Экран выбора героя: сколько секунд герой празднует, прежде чем перейти в стойку")] [Range(0, 6)] public float showCelebrate = 2.4f;
         [Header("Хвост")]
         [Tooltip("Насколько хвост отклоняется от движения")] [Range(0, 3)] public float tailAmount = 1;
         [Range(5, 200)] public float tailStiff = 70;
@@ -62,9 +100,29 @@ namespace Arena.Game
     public partial class HeroModel
     {
         static readonly string[] Folder = { "Jar", "Bagor", "Mig", "Vihr", "Ten", "Stena" };
-        static readonly string[] ClipFile = { "idle", "run", "kick", "kick_strong", "dash", "stun", "run" };
-        static readonly string[] ClipName = { "idle", "run", "kick", "kick_strong", "dash", "stun", "run_mirror" };
-        const int RunMirror = 6; // played together with Run, half a cycle apart: averages out any limp in the source clip
+        // one entry per HeroAnim; null = per hero (CelebrateFile)
+        static readonly string[] ClipFile = { "idle", "run", "kick", "kick_strong", "dash", "stun", "run",
+            "pass", "dribble", "fall", "fall_back", "get_up", "throw", "ground_punch", "spell", "magic", null, "sad", "defeated", "idle_show", "run_ball" };
+        static readonly string[] ClipName = { "idle", "run", "kick", "kick_strong", "dash", "stun", "run_mirror",
+            "pass", "dribble", "fall", "fall_back", "get_up", "throw", "ground_punch", "spell", "magic", null, "sad", "defeated", "idle_show", "run_ball" };
+        // свой танец после гола у каждого героя: Жар, Багор, Миг, Вихрь, Тень, Стена
+        static readonly string[] CelebrateFile = { "cel_victory", "cel_fist_pump", "cel_hip_hop", "cel_cheering", "cel_taunt", "cel_victory_idle" };
+        const int RunMirror = (int)HeroAnim.RunMirror; // played together with Run, half a cycle apart: averages out any limp in the source clip
+        // clips that walk away from the spot (falls, dribble): the hips are held over the hero, the sim decides where he is
+        static readonly HeroAnim[] PinnedAnims = { HeroAnim.Dribble, HeroAnim.Fall, HeroAnim.FallBack, HeroAnim.GetUp };
+        static readonly string[] Missing = new string[1];
+
+        static HeroAnim Fallback(HeroAnim s)
+        {
+            switch (s)
+            {
+                case HeroAnim.Pass: return HeroAnim.Kick;
+                case HeroAnim.Dribble: case HeroAnim.RunBall: return HeroAnim.Run;
+                case HeroAnim.Fall: case HeroAnim.FallBack: case HeroAnim.GetUp: return HeroAnim.Stun;
+                case HeroAnim.Throw: case HeroAnim.GroundPunch: return HeroAnim.KickStrong;
+                default: return HeroAnim.Idle;
+            }
+        }
 
         public static HeroArtTuning Tune = new HeroArtTuning();
         public static float FrameDt; // set by ArenaGame each frame; 0 while paused or in hitstop
@@ -78,7 +136,7 @@ namespace Arena.Game
         static readonly Dictionary<Hero, Art> cache = new Dictionary<Hero, Art>();
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
-        static void ResetStatics() { cache.Clear(); Tune = new HeroArtTuning(); FrameDt = 0; }
+        static void ResetStatics() { cache.Clear(); Tune = new HeroArtTuning(); FrameDt = 0; Missing[0] = null; }
 
         static Art Load(Hero h)
         {
@@ -91,12 +149,17 @@ namespace Arena.Game
                 if (model != null)
                 {
                     a = new Art { Model = model, Tail = Resources.Load<GameObject>(dir + "tail"), Albedo = Resources.Load<Texture2D>(dir + "albedo"), Normal = Resources.Load<Texture2D>(dir + "normal"), Clips = new AnimationClip[ClipFile.Length] };
+                    string missing = "";
                     for (int c = 0; c < ClipFile.Length; c++)
                     {
-                        var all = Resources.LoadAll<AnimationClip>("Heroes/Anim/" + ClipFile[c]); // shared by every hero
-                        a.Clips[c] = System.Array.Find(all, x => x.name == ClipName[c]);
+                        string file = ClipFile[c] ?? (i < CelebrateFile.Length ? CelebrateFile[i] : "cel_cheering");
+                        string clipName = ClipName[c] ?? file;
+                        var all = Resources.LoadAll<AnimationClip>("Heroes/Anim/" + file); // shared by every hero
+                        a.Clips[c] = System.Array.Find(all, x => x.name == clipName);
                         if (a.Clips[c] == null && c != RunMirror) a.Clips[c] = System.Array.Find(all, x => !x.name.StartsWith("__preview__"));
+                        if (a.Clips[c] == null && c != RunMirror) missing += " " + file;
                     }
+                    if (missing != "" && Missing[0] != missing) { Missing[0] = missing; Debug.LogWarning("[Arena] нет анимаций (будет запасная):" + missing); }
                     a.Emission = MakeEmission(a.Albedo, h);
                     if (a.Clips[0] == null) Debug.LogWarning("[Arena] " + dir + "idle: нет анимации, модель будет стоять в Т-позе");
                 }
@@ -210,7 +273,8 @@ namespace Arena.Game
         readonly PlayableGraph graph;
         readonly AnimationMixerPlayable mixer;
         readonly AnimationClipPlayable[] plays;
-        readonly float[] w, len; readonly bool[] loops;
+        readonly float[] w, len; readonly bool[] loops, has, pinned;
+        Transform hips; Vector3 hipsRest; // hips in model space at rest (idle), for PinnedAnims
         readonly bool animated, hasMirror;
         readonly float unitScale; // scale for a 1 m tall model
         HeroAnim cur = HeroAnim.Idle; float fadeRate = 10;
@@ -288,7 +352,8 @@ namespace Arena.Game
             Go.transform.localScale = Vector3.one * (Tune.height * unitScale);
 
             int n = ClipFile.Length;
-            plays = new AnimationClipPlayable[n]; w = new float[n]; len = new float[n]; loops = new bool[n];
+            plays = new AnimationClipPlayable[n]; w = new float[n]; len = new float[n]; loops = new bool[n]; has = new bool[n]; pinned = new bool[n];
+            foreach (var pa in PinnedAnims) pinned[(int)pa] = true;
             if (anim != null && a.Clips[0] != null)
             {
                 anim.applyRootMotion = false; anim.runtimeAnimatorController = null;
@@ -300,7 +365,8 @@ namespace Arena.Game
                 output.SetSourcePlayable(mixer);
                 for (int i = 0; i < n; i++)
                 {
-                    var clip = a.Clips[i] != null ? a.Clips[i] : a.Clips[0];
+                    has[i] = a.Clips[i] != null;
+                    var clip = has[i] ? a.Clips[i] : a.Clips[0];
                     plays[i] = AnimationClipPlayable.Create(graph, clip);
                     len[i] = clip.length; loops[i] = clip.isLooping;
                     graph.Connect(plays[i], 0, mixer, i);
@@ -310,6 +376,8 @@ namespace Arena.Game
                 graph.Play(); graph.Evaluate(0);
                 Go.AddComponent<HeroGraphOwner>().Graph = graph;
                 animated = true;
+                hips = anim.isHuman ? anim.GetBoneTransform(HumanBodyBones.Hips) : null;
+                if (hips != null) hipsRest = Go.transform.InverseTransformPoint(hips.position);
             }
             skinR = skin;
             glows = a.Emission != null;
@@ -454,9 +522,15 @@ namespace Arena.Game
             if (tailEmbers != null) { var em = tailEmbers.emission; em.rateOverTime = T.embers * 0.35f * heatShown; }
         }
 
+        /// <summary>Is there a real clip for this animation (not a stand-in)?</summary>
+        public bool Has(HeroAnim s) => animated && has[(int)s];
+        /// <summary>Clip length, s (at speed 1).</summary>
+        public float Length(HeroAnim s) => animated ? len[(int)s] : 0;
+
         public void Play(HeroAnim s, float fade, bool restart = false, float speed = 1, float startAt = 0)
         {
             if (!animated) return;
+            for (int k = 0; k < 3 && !has[(int)s] && s != HeroAnim.Idle; k++) { s = Fallback(s); startAt = 0; }
             int i = (int)s;
             if (s != cur || restart)
             {
@@ -482,8 +556,16 @@ namespace Arena.Game
                     if (hasMirror && cur == HeroAnim.Run && (i == (int)HeroAnim.Run || i == RunMirror)) target = 0.5f;
                     w[i] = Mathf.MoveTowards(w[i], target, dt * fadeRate); sum += w[i];
                 }
-                for (int i = 0; i < w.Length; i++) mixer.SetInputWeight(i, sum > 0 ? w[i] / sum : 0);
+                float pin = 0;
+                for (int i = 0; i < w.Length; i++) { float wi = sum > 0 ? w[i] / sum : 0; mixer.SetInputWeight(i, wi); if (pinned[i]) pin += wi; }
+                Go.transform.localPosition = Vector3.zero;
                 graph.Evaluate(dt);
+                if (pin > 0.001f && hips != null)
+                {   // hold the hips over the hero: falls and the dribble walk away from the spot in the source clip
+                    Vector3 d = Go.transform.InverseTransformPoint(hips.position) - hipsRest; d.y = 0;
+                    Vector3 off = Go.transform.parent.InverseTransformVector(Go.transform.TransformVector(d)); off.y = 0;
+                    Go.transform.localPosition = -off * Mathf.Clamp01(pin);
+                }
             }
             Go.transform.localRotation = Quaternion.Euler(0, Tune.modelYaw, 0);
             if (tails.Count > 0)
