@@ -267,6 +267,33 @@ namespace Arena.Sim
             StepPlayer(p, ix, iy, 1, dt);
         }
 
+        /// <summary>Идёт шаг предсказания (у друга в онлайне): никаких событий, ударов и действий с мячом.</summary>
+        public bool Predicting;
+
+        /// <summary>Друг в онлайне: шаг своего героя заранее, не дожидаясь хоста — бег, разворот, рывок, замах.
+        /// Удары, способности, мяч и столкновения решает только хост (снимок потом поправит позицию).</summary>
+        public void PredictStep(SimPlayer p, InputCommand c, float dt)
+        {
+            if (Freeze > 0 || Phase != MatchPhase.Playing) return; // пауза после гола / конец матча: хост тоже стоит
+            Predicting = true;
+            float ix = c.MoveX, iy = c.MoveY;
+            int curveHeld = c.CurveLeft ? -1 : c.CurveRight ? 1 : 0;
+            if (p.Hero == Hero.Curve && curveHeld != 0 && !p.Charging && !p.Lobbing && p.Stun <= 0)
+            {
+                if (p.Curving != curveHeld) { p.Curving = curveHeld; p.CurveCharge = 0; }
+                p.CurveCharge = Math.Min(1, p.CurveCharge + dt / 0.7f);
+            }
+            else if (p.Curving != 0) { p.Curving = 0; p.CurveCharge = 0; }
+            if (c.Lob && !p.Charging && p.Curving == 0 && p.Stun <= 0) { p.Lobbing = true; p.LobCharge = Math.Min(1, p.LobCharge + dt / T.lobTime); }
+            else if (p.Lobbing) { p.Lobbing = false; p.LobCharge = 0; }
+            if (c.Kick && !p.Lobbing && p.Curving == 0) { p.Charging = true; p.Charge = Math.Min(1, p.Charge + dt / 0.7f); }
+            else if (p.Charging) { p.Charging = false; p.Charge = 0; }
+            if (c.Dash) TryDash(p, ix, iy);
+            StepPlayer(p, ix, iy, 1, dt);
+            WallPushPlayer(p);
+            Predicting = false;
+        }
+
         void DummyStep(SimPlayer d, float dt)
         {
             float hx = d.HomeX;
@@ -286,23 +313,25 @@ namespace Arena.Sim
             }
         }
 
-        void StepPlayer(SimPlayer p, float ix, float iy, float spdMul, float dt)
+        /// <summary>lookX/lookY — куда смотреть, если не туда, куда бежим (боты: вратарь смотрит на мяч и отходит спиной вперёд).</summary>
+        void StepPlayer(SimPlayer p, float ix, float iy, float spdMul, float dt, float lookX = 0, float lookY = 0)
         {
             float cdk = Mode == GameMode.Training && p.IsHuman ? 4 : 1; // training: cooldowns run 4x faster
             p.KickCd = Math.Max(0, p.KickCd - dt); p.DashCd = Math.Max(0, p.DashCd - dt * cdk); p.Flash = Math.Max(0, p.Flash - dt); p.GrabCd = Math.Max(0, p.GrabCd - dt);
             p.HookCd = Math.Max(0, p.HookCd - dt * cdk); p.FireCd = Math.Max(0, p.FireCd - dt * cdk); p.TpCd = Math.Max(0, p.TpCd - dt * cdk);
             p.TpBackT = Math.Max(0, p.TpBackT - dt); p.CurveCd = Math.Max(0, p.CurveCd - dt * cdk);
             p.InvisCd = Math.Max(0, p.InvisCd - dt * cdk); p.WallCd = Math.Max(0, p.WallCd - dt * cdk);
-            if (p.InvisT > 0) { p.InvisT -= dt; if (p.InvisT <= 0) Reveal(p); }
+            if (p.InvisT > 0) { p.InvisT -= dt; if (p.InvisT <= 0 && !Predicting) Reveal(p); }
             if (p.Stun > 0)
             {
                 p.Stun -= dt; ix = iy = 0; p.Charging = false; p.Charge = 0; p.Lobbing = false; p.LobCharge = 0; p.Curving = 0; p.CurveCharge = 0;
                 if (p.FireT > 0) { p.FireT = 0; p.FireCd = T.fireCd * 0.3f; }
             }
-            if (p.FireT > 0) { p.FireT -= dt; if (p.FireT <= 0) ReleaseFire(p); }
-            if (ix != 0 || iy != 0)
+            if (p.FireT > 0) { p.FireT -= dt; if (p.FireT <= 0 && !Predicting) ReleaseFire(p); }
+            bool look = (lookX != 0 || lookY != 0) && p.Stun <= 0;
+            if (ix != 0 || iy != 0 || look)
             { // turn toward input at a limited rate so a dribbled ball swings around instead of teleporting
-                float cur = MathF.Atan2(p.Fy, p.Fx), tgt = MathF.Atan2(iy, ix), d = tgt - cur;
+                float cur = MathF.Atan2(p.Fy, p.Fx), tgt = look ? MathF.Atan2(lookY, lookX) : MathF.Atan2(iy, ix), d = tgt - cur;
                 while (d > MathF.PI) d -= MathF.PI * 2; while (d < -MathF.PI) d += MathF.PI * 2;
                 float mx = T.turn * dt, a = cur + M.Clamp(d, -mx, mx);
                 p.Fx = MathF.Cos(a); p.Fy = MathF.Sin(a);

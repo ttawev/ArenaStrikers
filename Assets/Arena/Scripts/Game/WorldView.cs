@@ -29,6 +29,7 @@ namespace Arena.Game
         public WorldView(Transform parent)
         {
             root = new GameObject("World").transform; root.SetParent(parent, false);
+            goalFx = new GoalFx(root);
             BuildLights();
             BuildPitch();
             BuildBoardsAndGoals();
@@ -170,13 +171,22 @@ namespace Arena.Game
                 m.SetTexture("_BaseMap", NetTexture()); m.SetTextureScale("_BaseMap", new Vector2(u / 8, v / 8));
                 return m;
             }
-            float yb = y0 + dir * NET;
-            Box(FW / 2, yb, GOAL, 2, GOALH, Net(GOAL, GOALH), "NetBack");
+            goalFx.Nets[y0 < FH / 2 ? 0 : 1] = new GoalNet(root, y0, dir, Net(GOAL, GOALH)); // задняя сетка прогибается после гола (GoalFx)
             Box(GX1, y0 + dir * NET / 2, 2, NET, GOALH, Net(NET, GOALH), "NetSideA"); Box(GX2, y0 + dir * NET / 2, 2, NET, GOALH, Net(NET, GOALH), "NetSideB");
             Box(FW / 2, y0 + dir * NET / 2, GOAL, NET, 2, Net(GOAL, NET), "NetTop").transform.position += new Vector3(0, (GOALH - 1) * S, 0);
             // лёгкая тень сетки на траве
             var tint = Mat.Clear(new Color(col.r, col.g, col.b, 0.12f));
             Box(FW / 2, y0 + dir * NET / 2, GOAL, NET, 0.4f, tint, "NetFloor");
+        }
+
+        readonly GoalFx goalFx; // сетка-«мешок», мяч в сетке, конфетти
+
+        /// <summary>Гол: мяч влетает в сетку, сетка прогибается, из штанг — конфетти и искры.</summary>
+        public void GoalHit(Match m, Team team, float x, float y, bool confetti)
+        {
+            goalFx.Hit(m, team, x, y, confetti);
+            Burst(FW / 2, y < FH / 2 ? 10 : FH - 10, team == Team.Home ? Mat.Home : Mat.Away, 70, 2.4f);
+            Burst(FW / 2, y < FH / 2 ? 10 : FH - 10, Mat.FireYellow, 30, 1.8f);
         }
 
         StadiumView stadium; // трибуны со зрителями, прожекторы, реклама, табло — Game/StadiumView.cs
@@ -502,6 +512,7 @@ namespace Arena.Game
 
             ballShadow.position = W.Pos(b.X, b.Y, 0.7f);
             ballShadow.localScale = Vector3.one * (1 + b.Z / 260);
+            if (goalFx.Tick(m, dt, out var gp, out var gs)) { ball.position = gp; ballShadow.position = gs; ballShadow.localScale = Vector3.one; trail.emitting = false; }
             ownerRing.gameObject.SetActive(b.Owner != null);
             if (b.Owner != null)
             {

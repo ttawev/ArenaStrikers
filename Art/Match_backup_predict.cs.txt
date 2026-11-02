@@ -1,0 +1,537 @@
+// The match: teams, kickoff, the fixed-step update, movement, collisions, ball physics, goals.
+// Ported 1:1 from the browser prototype "Арена Страйкеров 3D".
+using System;
+using System.Collections.Generic;
+using static Arena.Sim.Field;
+
+namespace Arena.Sim
+{
+    public enum MatchPhase { Playing, Ended }
+
+    public partial class Match
+    {
+        public Tuning T;
+        public readonly List<SimPlayer> Players = new List<SimPlayer>();
+        public readonly SimBall Ball = new SimBall();
+        public readonly List<Hook> Hooks = new List<Hook>();
+        public readonly List<IceWall> Walls = new List<IceWall>();
+        public readonly List<SimEvent> Events = new List<SimEvent>();
+
+        public GameMode Mode { get; private set; }
+        public int Difficulty { get; private set; } = 1;
+        public int ScoreHome, ScoreAway;
+        public float Clock = MATCH_TIME;
+        public float Freeze;
+        public string Banner = "";      // "ГОЛ!", "ПРОПУСТИЛ", "АВТОГОЛ" while frozen after a goal
+        public Team BannerTeam;
+        public MatchPhase Phase = MatchPhase.Playing;
+        /// <summary>Строки для журнала разработчика (автоголы); отображение выводит их в Logs/arena-runtime.log и очищает.</summary>
+        public readonly List<string> Log = new List<string>();
+        public readonly BotStats Stats = new BotStats();
+        SimPlayer passFrom; int passType; // последний пас бота, ещё не принятый
+
+        readonly Random rng;
+        float Rand() => (float)rng.NextDouble();
+
+        public Match(Tuning tuning, int seed)
+        {
+            T = tuning;
+            rng = new Random(seed);
+        }
+
+        // ---------- setup ----------
+        static readonly Hero[] AllHeroes = { Hero.Fire, Hero.Hook, Hero.Teleport, Hero.Curve, Hero.Shade, Hero.Wall };
+
+        Hero[] Shuffled(Hero[] a)
+        {
+            var r = (Hero[])a.Clone();
+            for (int i = r.Length - 1; i > 0; i--) { int j = rng.Next(i + 1); (r[i], r[j]) = (r[j], r[i]); }
+            return r;
+        }
+
+        SimPlayer Add(Team team, Hero hero, int humanSlot = -1, bool dummy = false)
+        {
+            var p = new SimPlayer { Id = Players.Count, Team = team, Hero = hero, HumanSlot = humanSlot, Dummy = dummy, Fy = team == Team.Home ? -1 : 1 };
+            Players.Add(p);
+            return p;
+        }
+
+        /// <summary>Builds the teams. Slot 0 is the local player; in a team every hero appears once, the rest are random.</summary>
+        public void Setup(GameMode mode, Hero myHero, int difficulty)
+        {
+            Mode = mode; Difficulty = Math.Max(0, Math.Min(2, difficulty));
+            Players.Clear(); localCache = null; LocalSlot = 0;
+            Add(Team.Home, myHero, 0);
+            var mine = new List<Hero>(Shuffled(AllHeroes)); mine.Remove(myHero);
+            var opp = Shuffled(AllHeroes);
+            switch (mode)
+            {
+                case GameMode.Training:
+                    // one mannequin is always a Тень that walks around and keeps vanishing — to see invisibility from the other side
+                    Add(Team.Away, Hero.Shade, -1, true); Add(Team.Away, opp[0] == Hero.Shade ? opp[1] : opp[0], -1, true); break;
+                case GameMode.OneVsOne:
+                    Add(Team.Away, opp[0]); break;
+                case GameMode.TwoVsTwo:
+                    Add(Team.Home, mine[0]); Add(Team.Away, opp[0]); Add(Team.Away, opp[1]); break;
+                default:
+                    Add(Team.Home, mine[0]); Add(Team.Home, mine[1]); Add(Team.Home, mine[2]);
+                    for (int i = 0; i < 4; i++) Add(Team.Away, opp[i]);
+                    break;
+            }
+            NewMatch();
+        }
+
+        public void NewMatch()
+        {
+            ScoreHome = ScoreAway = 0; Clock = MATCH_TIME; Phase = MatchPhase.Playing; Banner = "";
+            Kickoff();
+            foreach (var p in Players) p.Keeper = false; // постоянного вратаря нет: ворота закрывает последний защитник, пока команда обороняется
+            Freeze = Mode == GameMode.Training ? 0.3f : 1.2f;
+        }
+
+        /// <summary>В 4 на 4 у каждой команды вратарь — самый задний бот на расстановке (живые игроки вратарями не бывают).</summary>
+        void AssignKeepers()
+        {
+            foreach (var p in Players) p.Keeper = false;
+            if (Mode != GameMode.FourVsFour) return;
+            foreach (var team in new[] { Team.Home, Team.Away })
+            {
+                SimPlayer best = null;
+                foreach (var p in Players)
+                    if (p.Team == team && !p.IsHuman && !p.Dummy && (best == null || DepOf(p, p.Y) < DepOf(best, best.Y))) best = p;
+                if (best != null) best.Keeper = true;
+            }
+        }
+
+        /// <summary>Какой слот управления у этого компьютера (0 — хост или одиночная игра; в онлайне у друзей 1, 2, ...).</summary>
+        public int LocalSlot;
+        SimPlayer localCache;
+        public SimPlayer Local
+        {
+            get
+            {
+                if (localCache == null || localCache.HumanSlot != LocalSlot || !Players.Contains(localCache))
+                    localCache = Players.Find(p => p.HumanSlot == LocalSlot) ?? (Players.Count > 0 ? Players[0] : null);
+                return localCache;
+            }
+        }
+
+        /// <summary>Место в составе для онлайна: команда, герой, слот управления (-1 — бот).</summary>
+        public struct Seat { public Team Team; public Hero Hero; public int Slot; }
+
+        public static int TeamSize(GameMode mode) => mode == GameMode.OneVsOne ? 1 : mode == GameMode.TwoVsTwo ? 2 : 4;
+
+        /// <summary>Онлайн, хост: живые игроки по командам, свободные места — боты (герои в команде не повторяются).</summary>
+        public void SetupLineup(GameMode mode, IList<Seat> humans, int difficulty)
+        {
+            Mode = mode; Difficulty = Math.Max(0, Math.Min(2, difficulty));
+            Players.Clear(); localCache = null;
+            int per = TeamSize(mode);
+            foreach (var team in new[] { Team.Home, Team.Away })
+            {   // порядок важен для расстановки: сначала все хозяева, потом все гости
+                var used = new List<Hero>(); int n = 0;
+                foreach (var h in humans) if (h.Team == team && n < per) { Add(team, h.Hero, h.Slot); used.Add(h.Hero); n++; }
+                foreach (var hero in Shuffled(AllHeroes))
+                {
+                    if (n >= per) break;
+                    if (used.Contains(hero)) continue;
+                    Add(team, hero); n++;
+                }
+            }
+            NewMatch();
+        }
+
+        /// <summary>Онлайн, у друзей: точная копия состава хоста (дальше состояние приходит по сети).</summary>
+        public void SetupExact(GameMode mode, IList<Seat> all, int difficulty)
+        {
+            Mode = mode; Difficulty = Math.Max(0, Math.Min(2, difficulty));
+            Players.Clear(); localCache = null;
+            foreach (var s in all) Add(s.Team, s.Hero, s.Slot);
+            NewMatch();
+        }
+        public IEnumerable<SimPlayer> Enemies(SimPlayer p) { foreach (var q in Players) if (q.Team != p.Team) yield return q; }
+        public IEnumerable<SimPlayer> Mates(SimPlayer p) { foreach (var q in Players) if (q.Team == p.Team && q != p) yield return q; }
+
+        void Place(SimPlayer p, float x, float y) { p.X = FW * x; p.Y = FH * y; p.Fx = 0; p.Fy = p.Team == Team.Home ? -1 : 1; }
+
+        void Kickoff()
+        {
+            var b = Ball;
+            b.X = FW / 2; b.Y = FH / 2; b.Vx = b.Vy = 0; b.Owner = null; b.Lock = 0;
+            foreach (var p in Players) { p.ResetForKickoff(); p.Brain.T = Rand() * 0.1f; }
+            Hooks.Clear(); Walls.Clear(); b.Z = b.Vz = 0; b.Spin = 0; b.Last = null; b.Kicker = null; b.Hook = null; b.Fire = 0; b.FireBy = null;
+            var P = Players;
+            switch (Mode)
+            {
+                case GameMode.Training:
+                    Place(P[0], 0.5f, 0.62f); Place(P[1], 0.3f, 0.17f); Place(P[2], 0.68f, 0.34f);
+                    foreach (var d in P) if (d.Dummy) { d.HomeX = d.X; d.HomeY = d.Y; }
+                    b.X = P[0].X; b.Y = P[0].Y - R - BR - 40;
+                    break;
+                case GameMode.FourVsFour:
+                    Place(P[0], 0.5f, 0.58f); Place(P[1], 0.2f, 0.7f); Place(P[2], 0.8f, 0.7f); Place(P[3], 0.5f, 0.86f);
+                    Place(P[4], 0.5f, 0.42f); Place(P[5], 0.2f, 0.3f); Place(P[6], 0.8f, 0.3f); Place(P[7], 0.5f, 0.14f);
+                    break;
+                case GameMode.TwoVsTwo:
+                    Place(P[0], 0.5f, 0.6f); Place(P[1], 0.28f, 0.8f); Place(P[2], 0.5f, 0.4f); Place(P[3], 0.72f, 0.2f);
+                    break;
+                default:
+                    Place(P[0], 0.5f, 0.72f); Place(P[1], 0.5f, 0.28f);
+                    break;
+            }
+        }
+
+        /// <summary>Training: drop the ball right in front of the given player.</summary>
+        public void BallTo(SimPlayer p)
+        {
+            Hooks.RemoveAll(h => h.HasBall);
+            var b = Ball;
+            b.Hook = null; b.Owner = null; b.Vx = b.Vy = b.Vz = b.Z = 0; b.Spin = 0; b.Fire = 0;
+            b.X = M.Clamp(p.X + p.Fx * (R + BR + 30), BR, FW - BR); b.Y = M.Clamp(p.Y + p.Fy * (R + BR + 30), BR, FH - BR);
+            Burst(b.X, b.Y, FxColor.Mist, 10, 0.5f);
+        }
+
+        // ---------- events for the view ----------
+        void Burst(float x, float y, FxColor c, int n, float spd = 1) =>
+            Events.Add(new SimEvent { Kind = FxKind.Burst, X = x, Y = y, Color = c, Count = n, Amount = spd });
+        void Shake(float a) => Events.Add(new SimEvent { Kind = FxKind.Shake, Amount = a });
+        void Rumble(SimPlayer p, float strength) { if (p != null && p.IsHuman) Events.Add(new SimEvent { Kind = FxKind.Rumble, Player = p, Amount = strength }); }
+        void Impact(float x, float y, float a) => Events.Add(new SimEvent { Kind = FxKind.Impact, X = x, Y = y, Amount = a });
+        void Denied(SimPlayer p) { if (p.IsHuman) { Events.Add(new SimEvent { Kind = FxKind.Denied, Player = p }); Rumble(p, 0.15f); } }
+        public FxColor TeamColor(SimPlayer p) => p.Team == Team.Home ? FxColor.Home : FxColor.Away;
+
+        // ---------- the fixed-step update ----------
+        /// <summary>Advance one tick. inputs[slot] drives the human in that slot.</summary>
+        public void Step(float dt, InputCommand[] inputs)
+        {
+            if (Phase == MatchPhase.Ended) return;
+            if (Freeze > 0)
+            {
+                Freeze -= dt;
+                if (Freeze <= 0 && Banner != "")
+                {
+                    Banner = "";
+                    if (Mode == GameMode.Training) { BallTo(Local); return; }
+                    if (ScoreHome >= WIN_GOALS || ScoreAway >= WIN_GOALS) { Phase = MatchPhase.Ended; return; }
+                    Kickoff(); Freeze = 0.9f;
+                }
+                return;
+            }
+            if (Mode != GameMode.Training)
+            {
+                Clock -= dt;
+                if (Clock <= 0) { Clock = 0; Phase = MatchPhase.Ended; return; }
+            }
+
+            foreach (var p in Players)
+            {
+                if (p.IsHuman) HumanStep(p, p.HumanSlot < inputs.Length ? inputs[p.HumanSlot] : default, dt);
+                else if (p.Dummy) DummyStep(p, dt);
+                else BotStep(p, dt);
+            }
+            StepHooks(dt);
+            StepWalls(dt);
+            CollidePlayers();
+            foreach (var p in Players) WallPushPlayer(p);
+            foreach (var p in Players) CollideBall(p);
+            StepBall(dt);
+        }
+
+        void HumanStep(SimPlayer p, InputCommand c, float dt)
+        {
+            float ix = c.MoveX, iy = c.MoveY;
+            if (c.BallToMe && Mode == GameMode.Training) BallTo(p);
+            int curveHeld = c.CurveLeft ? -1 : c.CurveRight ? 1 : 0;
+            if (p.Hero == Hero.Curve && curveHeld != 0 && !p.Charging && !p.Lobbing && p.Stun <= 0)
+            {
+                if (p.Curving != curveHeld) { p.Curving = curveHeld; p.CurveCharge = 0; }
+                p.CurveCharge = Math.Min(1, p.CurveCharge + dt / 0.7f);
+            }
+            else if (p.Curving != 0) { TryCurve(p, ix, iy, p.CurveCharge, p.Curving); p.Curving = 0; p.CurveCharge = 0; }
+
+            if (c.Lob && !p.Charging && p.Curving == 0 && p.Stun <= 0) { p.Lobbing = true; p.LobCharge = Math.Min(1, p.LobCharge + dt / T.lobTime); }
+            else if (p.Lobbing) { TryLob(p, ix, iy, p.LobCharge); p.Lobbing = false; p.LobCharge = 0; }
+
+            if (c.Kick && !p.Lobbing && p.Curving == 0) { p.Charging = true; p.Charge = Math.Min(1, p.Charge + dt / 0.7f); }
+            else if (p.Charging) { TryKick(p, ix, iy, p.Charge); p.Charging = false; p.Charge = 0; }
+
+            if (c.Dash) TryDash(p, ix, iy);
+            if (c.Ability)
+            {
+                if (p.Hero == Hero.Hook) UseHook(p, ix, iy);
+                else if (p.Hero == Hero.Fire) UseFire(p);
+                else if (p.Hero == Hero.Teleport) UseTp(p);
+                else if (p.Hero == Hero.Shade) UseInvis(p);
+                else if (p.Hero == Hero.Wall) UseWall(p);
+            }
+            StepPlayer(p, ix, iy, 1, dt);
+        }
+
+        void DummyStep(SimPlayer d, float dt)
+        {
+            float hx = d.HomeX;
+            if (d.Hero == Hero.Shade)
+            { // patrol sideways; vanish for invisDur, then stay visible ~2.5 s
+                d.Brain.T += dt;
+                hx = M.Clamp(d.HomeX + MathF.Sin(d.Brain.T * 0.6f) * 300, R + 40, FW - R - 40);
+                if (!d.Invisible && d.InvisCd <= 0 && d.Stun <= 0) { UseInvis(d); d.InvisCd = T.invisDur + 2.5f; }
+            }
+            float dx = hx - d.X, dy = d.HomeY - d.Y, dd = M.Len(dx, dy);
+            if (dd > 10) StepPlayer(d, dx / dd, dy / dd, 0.45f, dt);
+            else
+            {
+                StepPlayer(d, 0, 0, 1, dt);
+                d.Fx += (0 - d.Fx) * 0.05f; d.Fy += (1 - d.Fy) * 0.05f;
+                float m = M.Len(d.Fx, d.Fy); if (m == 0) m = 1; d.Fx /= m; d.Fy /= m;
+            }
+        }
+
+        /// <summary>lookX/lookY — куда смотреть, если не туда, куда бежим (боты: вратарь смотрит на мяч и отходит спиной вперёд).</summary>
+        void StepPlayer(SimPlayer p, float ix, float iy, float spdMul, float dt, float lookX = 0, float lookY = 0)
+        {
+            float cdk = Mode == GameMode.Training && p.IsHuman ? 4 : 1; // training: cooldowns run 4x faster
+            p.KickCd = Math.Max(0, p.KickCd - dt); p.DashCd = Math.Max(0, p.DashCd - dt * cdk); p.Flash = Math.Max(0, p.Flash - dt); p.GrabCd = Math.Max(0, p.GrabCd - dt);
+            p.HookCd = Math.Max(0, p.HookCd - dt * cdk); p.FireCd = Math.Max(0, p.FireCd - dt * cdk); p.TpCd = Math.Max(0, p.TpCd - dt * cdk);
+            p.TpBackT = Math.Max(0, p.TpBackT - dt); p.CurveCd = Math.Max(0, p.CurveCd - dt * cdk);
+            p.InvisCd = Math.Max(0, p.InvisCd - dt * cdk); p.WallCd = Math.Max(0, p.WallCd - dt * cdk);
+            if (p.InvisT > 0) { p.InvisT -= dt; if (p.InvisT <= 0) Reveal(p); }
+            if (p.Stun > 0)
+            {
+                p.Stun -= dt; ix = iy = 0; p.Charging = false; p.Charge = 0; p.Lobbing = false; p.LobCharge = 0; p.Curving = 0; p.CurveCharge = 0;
+                if (p.FireT > 0) { p.FireT = 0; p.FireCd = T.fireCd * 0.3f; }
+            }
+            if (p.FireT > 0) { p.FireT -= dt; if (p.FireT <= 0) ReleaseFire(p); }
+            bool look = (lookX != 0 || lookY != 0) && p.Stun <= 0;
+            if (ix != 0 || iy != 0 || look)
+            { // turn toward input at a limited rate so a dribbled ball swings around instead of teleporting
+                float cur = MathF.Atan2(p.Fy, p.Fx), tgt = look ? MathF.Atan2(lookY, lookX) : MathF.Atan2(iy, ix), d = tgt - cur;
+                while (d > MathF.PI) d -= MathF.PI * 2; while (d < -MathF.PI) d += MathF.PI * 2;
+                float mx = T.turn * dt, a = cur + M.Clamp(d, -mx, mx);
+                p.Fx = MathF.Cos(a); p.Fy = MathF.Sin(a);
+            }
+            if (p.DashT > 0) p.DashT -= dt;
+            else
+            {
+                float k = Math.Min(1, (p.Stun > 0 ? 3 : 14) * dt);
+                float ms = T.speed * spdMul * (p.Charging || p.Lobbing || p.Curving != 0 ? 0.82f : 1) * (Ball.Owner == p ? T.dribble : 1) * (p.FireT > 0 ? 0.35f : 1);
+                p.Vx += (ix * ms - p.Vx) * k; p.Vy += (iy * ms - p.Vy) * k;
+            }
+            p.X += p.Vx * dt; p.Y += p.Vy * dt;
+            if (p.X < R) { p.X = R; p.Vx = 0; }
+            if (p.X > FW - R) { p.X = FW - R; p.Vx = 0; }
+            if (p.Y < R) { p.Y = R; p.Vy = 0; }
+            if (p.Y > FH - R) { p.Y = FH - R; p.Vy = 0; }
+        }
+
+        void CollidePlayers()
+        {
+            for (int i = 0; i < Players.Count; i++)
+                for (int j = i + 1; j < Players.Count; j++)
+                {
+                    var a = Players[i]; var b = Players[j];
+                    float dx = b.X - a.X, dy = b.Y - a.Y, d = M.Len(dx, dy);
+                    if (!(d > 0 && d < R * 2)) continue;
+                    float nx = dx / d, ny = dy / d, o = (R * 2 - d) / 2;
+                    a.X -= nx * o; a.Y -= ny * o; b.X += nx * o; b.Y += ny * o;
+                    if (a.Team == b.Team) continue; // teammates just shoulder past each other
+                    if (a.DashT > 0 && b.DashT <= 0 && b.Stun <= 0) DashHit(a, b, nx, ny);
+                    else if (b.DashT > 0 && a.DashT <= 0 && a.Stun <= 0) DashHit(b, a, -nx, -ny);
+                }
+        }
+
+        // a dashes into b along (nx,ny): b is knocked away, stunned, and loses the ball
+        void DashHit(SimPlayer a, SimPlayer b, float nx, float ny)
+        {
+            if (Ball.Owner == b) { ReleaseBall(b, 0.9f); Ball.Vx = b.Vx * 0.5f + nx * 260; Ball.Vy = b.Vy * 0.5f + ny * 260; Ball.Last = a; Ball.Kicker = a; Ball.LastHow = "выбил рывком"; }
+            Impact(b.X, b.Y, 0.8f);
+            Reveal(b);
+            b.Stun = 0.75f; b.Vx = nx * 620; b.Vy = ny * 620; b.DashT = 0.12f;
+            a.DashT = 0; a.Vx *= 0.3f; a.Vy *= 0.3f; b.Charging = false; b.Charge = 0;
+            Shake(6); Rumble(a, 0.4f); Rumble(b, 0.6f);
+        }
+
+        // ---------- possession ----------
+        bool IsFront(SimPlayer p) { var n = M.Norm(Ball.X - p.X, Ball.Y - p.Y); return n.x * p.Fx + n.y * p.Fy > FRONT; }
+        void ReleaseBall(SimPlayer p, float cd) { if (Ball.Owner == p) { Ball.Owner = null; p.GrabCd = cd; } }
+        void TakeBall(SimPlayer p)
+        {
+            Ball.GlueAng = MathF.Atan2(Ball.Y - p.Y, Ball.X - p.X); // received from the side or back: rolls around to the front
+            if (p.Keeper && Ball.Owner == null && (p.Team == Team.Home ? Ball.Vy : -Ball.Vy) > 350) Stats.Saves++;
+            if (passFrom != null)
+            {   // пас бота дошёл до своего / перехвачен — для статистики
+                if (p != passFrom && p.Team == passFrom.Team) { if (passType == BotStats.PassGround) Stats.PassGroundOk++; else Stats.PassLobOk++; }
+                passFrom = null;
+            }
+            Ball.Owner = p; Ball.Last = p; Ball.Kicker = p; Ball.LastHow = "приём"; Ball.Spin = 0; Ball.Lock = 0.3f; p.Charging = false; p.Charge = 0; Rumble(p, 0.15f);
+            Events.Add(new SimEvent { Kind = FxKind.Receive, X = Ball.X, Y = Ball.Y, Player = p });
+        }
+
+        void CollideBall(SimPlayer p)
+        {
+            var b = Ball;
+            if (b.Owner == p || b.Hook != null) return;
+            if (b.Fire > 0 && b.Owner == null && p == b.FireBy && b.FireGrace > 0) return;
+            if (b.Fire > 0 && b.Owner == null && b.FireBy != null && b.FireBy.Team != p.Team)
+            { // a fire shot hits an opponent: stun, knock back, the ball bounces off weakened
+                float fx = b.X - p.X, fy = b.Y - p.Y, fd = M.Len(fx, fy);
+                if (fd < R + BR + 2 && b.Z < HEAD)
+                {
+                    float nx = 0, ny = 1; if (fd > 0) { nx = fx / fd; ny = fy / fd; }
+                    var bv = M.Norm(b.Vx, b.Vy); float sp = M.Len(b.Vx, b.Vy);
+                    p.Stun = Math.Max(p.Stun, T.fireStun); p.Vx = bv.x * 520; p.Vy = bv.y * 520; p.DashT = 0.12f;
+                    p.Charging = false; p.Charge = 0; p.FireT = 0; p.GrabCd = Math.Max(p.GrabCd, 0.4f);
+                    b.X = p.X + nx * (R + BR + 1); b.Y = p.Y + ny * (R + BR + 1);
+                    float vx = b.Vx, vy = b.Vy, vn = vx * nx + vy * ny;
+                    if (vn < 0) { vx -= 2 * vn * nx; vy -= 2 * vn * ny; }
+                    float k = sp * T.fireKeep / Math.Max(1, M.Len(vx, vy)); b.Vx = vx * k; b.Vy = vy * k; b.Fire = 0; b.Last = p; b.LastHow = "рикошет огненного удара";
+                    Impact(b.X, b.Y, 1.4f);
+                    Burst(b.X, b.Y, FxColor.Fire, 28, 1.4f); Burst(b.X, b.Y, FxColor.FireYellow, 12, 0.8f); Shake(11); Rumble(p, 0.9f); Rumble(b.FireBy, 0.4f);
+                }
+                return;
+            }
+            float dx = b.X - p.X, dy = b.Y - p.Y, dd = M.Len(dx, dy);
+            bool canGrab = !p.Dummy && p.Stun <= 0 && p.GrabCd <= 0 && (T.receiveAnySide || IsFront(p));
+            if (b.Owner != null)
+            { // steal: only a front touch on the carried ball, never from a teammate
+                if (b.Owner.Team == p.Team) return;
+                if (dd < R + BR + 3 && canGrab && b.Lock <= 0) { ReleaseBall(b.Owner, 0.35f); TakeBall(p); }
+                return;
+            }
+            if (b.Z >= HEAD) return; // flies over heads
+            if (b.Z < LOW && dd < R + BR + 2 && canGrab && M.Len(b.Vx - p.Vx, b.Vy - p.Vy) < T.catchSpd) { TakeBall(p); return; }
+            if (dd > 0 && dd < R + BR)
+            {
+                float nx = dx / dd, ny = dy / dd;
+                b.X = p.X + nx * (R + BR); b.Y = p.Y + ny * (R + BR);
+                float rvx = b.Vx - p.Vx, rvy = b.Vy - p.Vy, vn = rvx * nx + rvy * ny;
+                if (vn < 0)
+                { // a real impact (not the kicker running after his own ball) kills the spin
+                    if (p.Keeper && (p.Team == Team.Home ? b.Vy : -b.Vy) > 350) Stats.Saves++; // отбил удар
+                    b.Spin = 0; b.Last = p; b.LastHow = p.Stun > 0 ? "отскок от сбитого игрока" : p.DashT > 0 ? "отскок от рывка" : canGrab ? "отскок от ног" : "отскок от тела (спиной/боком)";
+                    // сбитый (оглушённый) игрок летит телом — мяч от него отскакивает мягко, а не как от рывка
+                    float e = p.Stun > 0 ? 0.25f : p.DashT > 0 ? 1.1f : (canGrab ? 0.05f : 0.35f);
+                    b.Vx -= (1 + e) * vn * nx; b.Vy -= (1 + e) * vn * ny;
+                    if (canGrab && p.DashT <= 0) { b.Vx = p.Vx + (b.Vx - p.Vx) * 0.4f; b.Vy = p.Vy + (b.Vy - p.Vy) * 0.4f; } // front touch: deaden at the feet
+                }
+            }
+        }
+
+        // ---------- ball ----------
+        void PostBounce(float px, float py)
+        {
+            var b = Ball;
+            float dx = b.X - px, dy = b.Y - py, d = M.Len(dx, dy);
+            if (d > 0 && d < BR + POST)
+            {
+                float nx = dx / d, ny = dy / d;
+                b.X = px + nx * (BR + POST); b.Y = py + ny * (BR + POST);
+                float vn = b.Vx * nx + b.Vy * ny;
+                if (vn < 0) { b.Vx -= (1 + T.bounce) * vn * nx; b.Vy -= (1 + T.bounce) * vn * ny; }
+            }
+        }
+
+        public static (float vx, float vy) CurveTurn(float vx, float vy, float spin, float dt)
+        {
+            float sp = M.Len(vx, vy);
+            if (sp < 60 || spin == 0) return (vx, vy);
+            return M.Rot(vx, vy, spin * dt);
+        }
+
+        void StepBall(float dt)
+        {
+            var b = Ball;
+            b.Lock = Math.Max(0, b.Lock - dt);
+            if (b.Hook != null) return; // being reeled in
+            if (b.Owner != null)
+            { // glued to the carrier's face
+                var p = b.Owner;
+                // the ball rolls around the body to the front (fast), instead of snapping there
+                float face = MathF.Atan2(p.Fy, p.Fx), da = face - b.GlueAng;
+                while (da > MathF.PI) da -= MathF.PI * 2; while (da < -MathF.PI) da += MathF.PI * 2;
+                float step = 24 * dt; b.GlueAng += Math.Abs(da) <= step ? da : Math.Sign(da) * step;
+                b.X = p.X + MathF.Cos(b.GlueAng) * (R + BR + 1); b.Y = p.Y + MathF.Sin(b.GlueAng) * (R + BR + 1); b.Vx = p.Vx; b.Vy = p.Vy; b.Z = b.Vz = 0;
+                b.X = M.Clamp(b.X, BR, FW - BR);
+                bool inMouthD = b.X > GX1 + BR * 0.5f && b.X < GX2 - BR * 0.5f;
+                if (!inMouthD) b.Y = M.Clamp(b.Y, BR, FH - BR);
+                // мяч у ног не заходит в СВОИ ворота: защитник принял мяч у линии лицом к воротам — раньше это сразу было автоголом
+                bool ownGoal = (b.Y < 0 && p.Team == Team.Away) || (b.Y > FH && p.Team == Team.Home);
+                if (inMouthD && ownGoal) b.Y = M.Clamp(b.Y, BR, FH - BR);
+                else if (inMouthD && b.Y < 0) { ReleaseBall(p, 0.5f); b.LastHow = "занёс у ног"; Goal(Team.Home); }
+                else if (inMouthD && b.Y > FH) { ReleaseBall(p, 0.5f); b.LastHow = "занёс у ног"; Goal(Team.Away); }
+                return;
+            }
+            if (b.Z > 0 || b.Vz > 0)
+            { // flight and bounces
+                b.Vz -= GRAV * dt; b.Z += b.Vz * dt;
+                if (b.Z <= 0)
+                {
+                    b.Z = 0;
+                    if (b.Vz < -170) { b.Vz = -b.Vz * 0.45f; b.Vx *= 0.8f; b.Vy *= 0.8f; if (b.Vz > 300) Burst(b.X, b.Y, FxColor.Dust, 5, 0.4f); }
+                    else b.Vz = 0;
+                }
+            }
+            bool air = b.Z > 0;
+            float f = MathF.Exp(-T.friction * dt * (air ? 0.05f : (b.Fire > 0 ? 0.25f : 1))); b.Vx *= f; b.Vy *= f;
+            if (b.Spin != 0 && !air)
+            {
+                (b.Vx, b.Vy) = CurveTurn(b.Vx, b.Vy, b.Spin, dt);
+                b.Spin *= MathF.Exp(-T.curveDecay * dt); if (Math.Abs(b.Spin) < 0.03f) b.Spin = 0;
+            }
+            float cap = b.Fire > 0 ? 3400 : 2200, sp = M.Len(b.Vx, b.Vy);
+            if (sp > cap) { b.Vx *= cap / sp; b.Vy *= cap / sp; }
+            b.X += b.Vx * dt; b.Y += b.Vy * dt;
+            WallBounceBall();
+            bool inMouth = b.X > GX1 && b.X < GX2 && b.Z + BR * 2 < GOALH + 2; // over the crossbar = no goal
+            if (b.Y < BR + 2 || b.Y > FH - BR - 2)
+            { // inside a goal: net side walls
+                if (b.Y < 0 || b.Y > FH)
+                {
+                    if (b.X < GX1 + BR) { b.X = GX1 + BR; b.Vx = Math.Abs(b.Vx) * 0.4f; }
+                    if (b.X > GX2 - BR) { b.X = GX2 - BR; b.Vx = -Math.Abs(b.Vx) * 0.4f; }
+                }
+            }
+            if (b.X < BR) { b.X = BR; b.Vx = Math.Abs(b.Vx) * T.bounce; }
+            if (b.X > FW - BR) { b.X = FW - BR; b.Vx = -Math.Abs(b.Vx) * T.bounce; }
+            if (!inMouth && b.Y > -1 && b.Y < FH + 1)
+            {
+                if (b.Y < BR) { b.Y = BR; b.Vy = Math.Abs(b.Vy) * T.bounce; }
+                if (b.Y > FH - BR) { b.Y = FH - BR; b.Vy = -Math.Abs(b.Vy) * T.bounce; }
+            }
+            if (b.Z < GOALH) { PostBounce(GX1, 0); PostBounce(GX2, 0); PostBounce(GX1, FH); PostBounce(GX2, FH); }
+            if (b.Fire > 0)
+            {
+                b.Fire -= dt; b.FireGrace -= dt;
+                if (M.Len(b.Vx, b.Vy) < 650) b.Fire = 0;
+            }
+            if (b.Y < -BR - 4) Goal(Team.Home);
+            else if (b.Y > FH + BR + 4) Goal(Team.Away);
+        }
+
+        void Goal(Team team)
+        {
+            bool training = Mode == GameMode.Training;
+            if (!training || team == Team.Home) { if (team == Team.Home) ScoreHome++; else ScoreAway++; }
+            var lt = Ball.Last;
+            Stats.Goals++;
+            var kk = Ball.Kicker;
+            if (!training && kk != null && kk.Team != team)
+            {   // последним осознанно играл мячом защищавшийся — настоящий автогол
+                Stats.OwnGoals++;
+                Log.Add("АВТОГОЛ: " + kk.Hero + " (" + kk.Team + ", " + (kk.IsHuman ? "игрок" : "бот") + "), последнее касание: " + Ball.LastHow
+                        + (lt != kk && lt != null ? " (" + lt.Hero + ")" : "") + "; скорость мяча " + (int)M.Len(Ball.Vx, Ball.Vy) + ", время " + (int)(MATCH_TIME - Clock) + " с");
+            }
+            else if (!training && lt != null && lt.Team != team)
+            {   // били соперники, мяч лишь задел защитника — гол после рикошета
+                Stats.Deflected++;
+                Log.Add("рикошет: удар " + (kk != null ? kk.Hero.ToString() : "?") + ", задел " + lt.Hero + " (" + Ball.LastHow + ")");
+            }
+            BannerTeam = team;
+            Banner = team == Team.Home ? "ГОЛ!" : training ? "АВТОГОЛ" : "ПРОПУСТИЛ";
+            Freeze = training ? 0.8f : T.goalPause;
+            Events.Add(new SimEvent { Kind = FxKind.Goal, Team = team, X = Ball.X, Y = M.Clamp(Ball.Y, -20, FH + 20) });
+            Shake(14);
+            foreach (var p in Players) if (p.IsHuman) Rumble(p, p.Team == team ? 0.7f : 0.5f);
+            Ball.Vx *= 0.1f; Ball.Vy *= 0.1f;
+        }
+    }
+}

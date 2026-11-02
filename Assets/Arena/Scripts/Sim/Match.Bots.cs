@@ -76,7 +76,14 @@ namespace Arena.Sim
                 }
             }
             else { b.Charging = false; b.Charge = 0; }
-            StepPlayer(b, mx, my, D.Spd, dt);
+            // куда смотреть: вратарь — всегда на мяч (отходит спиной вперёд), остальные — на мяч, когда почти стоят
+            float lx = 0, ly = 0;
+            if (Ball.Owner != b && !P.WantKick && b.Stun <= 0 && b.DashT <= 0 && (b.Keeper || M.Len(mx, my) < 0.35f))
+            {
+                float dx = Ball.X - b.X, dy = Ball.Y - b.Y, dd = M.Len(dx, dy);
+                if (dd > 30) { lx = dx / dd; ly = dy / dd; }
+            }
+            StepPlayer(b, mx, my, D.Spd, dt, lx, ly);
         }
 
         void CountKick(SimPlayer b, int intent)
@@ -488,6 +495,22 @@ namespace Arena.Sim
             // Тень: vanish to get open while we attack, or to sneak up on the carrier
             if (b.Hero == Hero.Shade && b.InvisCd <= 0 && !b.Invisible &&
                 ((mateHas && Rand() < D.Abil * 0.15f) || (foeHas && chase && dBall < 380 && dBall > 120 && Rand() < D.Abil * 0.3f))) UseInvis(b);
+            // подкат сзади: соперник с мячом убегает к нашим воротам, мы рядом позади — сбиваем рывком.
+            // Может любой бот рядом, не только тот, кто «идёт на мяч» (иначе догоняющий сзади просто бежит следом).
+            // Выбитый мяч летит по рывку (Match.DashHit), поэтому только далеко от своих ворот или если мяч уйдёт мимо створа.
+            if (b.DashCd <= 0 && foeHas && ball.Owner.Stun <= 0 && DepOf(b, b.Y) > DepOf(b, ball.Owner.Y) - 10)
+            {
+                var c = ball.Owner;
+                float px = c.X + c.Vx * 0.08f, py = c.Y + c.Vy * 0.08f; // куда он сместится, пока мы рвёмся
+                float dC = M.Len(px - b.X, py - b.Y);
+                if (dC > 40 && dC < T.tackleReach)
+                {
+                    var dn = M.Norm(px - b.X, py - b.Y);
+                    var knock = M.Norm(c.Vx * 0.5f + dn.x * 260, c.Vy * 0.5f + dn.y * 260); // так отлетит мяч
+                    bool safe = DepOf(b, c.Y) > T.tackleSafeDepth || !AimsAtOwnGoal(b, knock.x, knock.y);
+                    if (safe && Rand() < D.Dash * T.tackleEager) { TryDash(b, dn.x, dn.y); return; }
+                }
+            }
             if (!chase) return;
             if (b.Hero == Hero.Hook && b.HookCd <= 0 && ball.Hook == null && !mateHas && !Hooks.Exists(h => h.Owner == b) && dBall > 170 && dBall < T.hookRange * 0.85f && Rand() < D.Abil * 0.35f)
             {
@@ -500,6 +523,7 @@ namespace Arena.Sim
             bool towardOwnGoal = toBall.y * -fwd > 0.2f || AimsAtOwnGoal(b, toBall.x, toBall.y);
             bool goalSide = Dep(b.Y) < Dep(ball.Y) + 10; // я между мячом и своими воротами
             if (b.DashCd <= 0 && dBall > 55 && dBall < 220 && foeHas && goalSide && !towardOwnGoal && Rand() < D.Dash * 0.35f) TryDash(b, ball.X - b.X, ball.Y - b.Y);
+
         }
     }
 }

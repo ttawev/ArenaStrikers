@@ -1,0 +1,16 @@
+Арена Страйкеров — авторы использованных материалов (для титров игры и страницы Steam)
+
+ЗВУКИ (лицензия требует указать автора):
+- Трибуны: гул и рёв после гола — Gregor Quendel, "Free Crowd Cheering Sounds"
+  https://gregor-quendel.itch.io/free-crowd-cheering-sounds — CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)
+  Использованы фрагменты треков "10 - Ambience" (crowd_loop) и "04 - Strong cheering - II - Short" (crowd_cheer), обрезаны и склеены в петлю.
+- Трибуны «у-у-у»: Quistard, "Football Crowd - Near miss ooh 2 - Southampton Vs Hull at Saint Mary's Stadium"
+  https://freesound.org/s/237684 — CC BY 3.0 (https://creativecommons.org/licenses/by/3.0/)
+  Использован фрагмент (crowd_ooh).
+
+МУЗЫКА (CC0 — указывать не обязательно, но вежливо):
+- Меню: beardalaxy, "Upbeat Title Theme Loop" — https://opengameart.org/node/165344 — CC0
+
+АНИМАЦИИ: Mixamo (Adobe) — бесплатно для коммерческих игр, указание не требуется.
+МОДЕЛИ ГЕРОЕВ: созданы с помощью Meshy (ИИ) и доработаны — указать в раскрытии ИИ в Steam.
+Остальные звуки (удары, способности, свисток, интерфейс) синтезированы в коде игры.

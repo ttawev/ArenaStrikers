@@ -32,6 +32,33 @@ namespace Arena.Game
         [Tooltip("Камера повтора: расстояние до поля")] [Range(4, 20)] public float replayDistance = 8;
         [Tooltip("Камера повтора: наклон")] [Range(30, 80)] public float replayTilt = 44;
 
+        [Header("Гол")]
+        [Tooltip("Замедление сразу после гола (только офлайн, не в тренировке). До гола не замедляем — иначе заранее понятно, что забил")] public bool slowMo = true;
+        [Tooltip("Скорость игры в замедлении (1 — без замедления)")] [Range(0.1f, 1)] public float slowMoAmount = 0.3f;
+        [Tooltip("Сколько держать замедление после гола, с")] [Range(0, 2)] public float slowMoAfter = 0.45f;
+        [Tooltip("Камера подлетает к забившему, пока он празднует")] public bool goalCam = true;
+        [Tooltip("Камера у забившего: расстояние")] [Range(3, 15)] public float goalCamDistance = 6;
+        [Tooltip("Камера у забившего: наклон")] [Range(20, 80)] public float goalCamTilt = 40;
+        [Tooltip("Прогиб сетки: сила удара мяча")] [Range(0, 0.5f)] public float netPunch = 0.16f;
+        [Tooltip("Прогиб сетки: упругость (больше — быстрее возвращается)")] [Range(20, 400)] public float netStiff = 110;
+        [Tooltip("Прогиб сетки: затухание (0 — долго колышется, 1 — без колебаний)")] [Range(0.05f, 1)] public float netDamp = 0.32f;
+        [Tooltip("Конфетти: бумажек от каждой штанги (0 — без конфетти)")] [Range(0, 600)] public int confetti = 140;
+        [Tooltip("Вспышки прожекторов в цвет команды: сила (0 — выкл)")] [Range(0, 4)] public float goalFlash = 1.6f;
+        [Tooltip("Вспышки прожекторов: длительность, с")] [Range(0, 4)] public float goalFlashTime = 1.8f;
+
+        [Header("Онлайн")]
+        [Tooltip("Сколько раз в секунду хост рассылает снимки матча")] [Range(20, 60)] public int snapRate = 60;
+        [Tooltip("Наименьший буфер сглаживания у друга, с (меньше — быстрее отклик, но при плохой связи рывки)")] [Range(0.01f, 0.15f)] public float minInterpDelay = 0.035f;
+        [Tooltip("Предсказание своего героя у друга: бег, разворот, рывок без задержки (выкл — как раньше, для сравнения)")] public bool predictOwnHero = true;
+        [Tooltip("Друг: имитация плохой связи — добавочный пинг, мс (проверка предсказания на одном компьютере; 0 — выкл)")] [Range(0, 400)] public int simulatedPing = 0;
+        [Tooltip("Хост: сколько шагов ввода друга держать в очереди (больше — ровнее при плохой связи, но задержка)")] [Range(1, 12)] public int inputQueue = 4;
+
+        [Header("Звук")]
+        [Range(0, 1)] public float masterVolume = 1;
+        [Tooltip("Удары, способности, свисток, интерфейс")] [Range(0, 1)] public float sfxVolume = 1;
+        [Tooltip("Трибуны")] [Range(0, 1)] public float crowdVolume = 0.8f;
+        [Range(0, 1)] public float musicVolume = 0.5f;
+
         [Header("Модели героев")]
         public HeroArtTuning heroArt = new HeroArtTuning();
 
@@ -56,8 +83,10 @@ namespace Arena.Game
         static readonly string[] DiffNames = { "Лёгкий", "Средний", "Сложный" };
         int heroSel, modeSel = 2, diffSel = 1;
         float denyFlash, hitstop, fovPunch;
-        AudioSource audioSrc;
-        AudioClip receiveClip;
+        float slow = 1, slowHold;                  // замедление у ворот
+        float goalT0 = -10; int goalScorer = -1;   // момент гола (unscaled) и кто забил — для камеры и счёта
+        int goalScoreH, goalScoreA; Team goalTeam;
+        MatchAudio sound; // все звуки: Game/MatchAudio.cs
         readonly GoalReplay goalReplay = new GoalReplay();
         float replayIn, camTilt = 52, toastT; string toast = "";
         bool hudHidden, clipCam;
@@ -72,9 +101,17 @@ namespace Arena.Game
         void Awake()
         {
             RuntimeLog.Start();
+#if UNITY_WEBGL && !UNITY_EDITOR
+            Application.targetFrameRate = -1; // в браузере частоту задаёт сам браузер (обычно под монитор)
+#else
             Application.targetFrameRate = 144;
+#endif
             Application.runInBackground = true; // онлайн: игра не должна замирать, когда окно не в фокусе
-            netName = PlayerPrefs.GetString("arena.name", System.Environment.UserName);
+            string defName = "Игрок"; try { if (!string.IsNullOrEmpty(System.Environment.UserName)) defName = System.Environment.UserName; } catch { }
+#if UNITY_WEBGL && !UNITY_EDITOR
+            defName = "Игрок"; // в браузере имени пользователя нет
+#endif
+            netName = PlayerPrefs.GetString("arena.name", defName);
             heroSel = PlayerPrefs.GetInt("arena.hero", 0); modeSel = PlayerPrefs.GetInt("arena.mode", 2); diffSel = PlayerPrefs.GetInt("arena.diff", 1);
             cam = Camera.main;
             if (cam == null) { var go = new GameObject("Main Camera") { tag = "MainCamera" }; cam = go.AddComponent<Camera>(); go.AddComponent<AudioListener>(); }
@@ -82,8 +119,7 @@ namespace Arena.Game
             cam.allowHDR = true;
             cam.clearFlags = CameraClearFlags.SolidColor; cam.backgroundColor = Mat.Night; cam.nearClipPlane = 0.1f; cam.farClipPlane = 120;
             view = new WorldView(transform);
-            audioSrc = gameObject.AddComponent<AudioSource>(); audioSrc.playOnAwake = false; audioSrc.spatialBlend = 0;
-            receiveClip = SoundFx.Receive();
+            sound = new MatchAudio(gameObject);
             match = new Match(tuning, System.Environment.TickCount);
             showcase = new HeroShowcase(transform);
             ui = new MenuUI(this, transform);
@@ -173,16 +209,19 @@ namespace Arena.Game
             {   // друг: матч считает хост, мы шлём ввод и показываем его снимки
                 input.Poll(match.Local.Hero);
                 var c = input.Take(match.Local.Hero); lastCmd = c;
-                net.SendInput(netMenu ? default : c, dt);
-                net.ClientTick(match, 0.1f, e => Fx(e, false, true));
+                net.ClientTick(match, net.InterpDelay, e => Fx(e, false, true)); // все — по снимкам хоста (чуть в прошлом)
+                net.ClientStep(match, netMenu ? default : c, dt);                 // свой герой — сразу, по предсказанию; ввод — хосту
                 if (match.Phase == MatchPhase.Ended) { state = State.Ended; input.StopRumble(); }
             }
-            else if (state == State.Ended && IsClient) net.ClientTick(match, 0.1f, e => Fx(e, false, true));
+            else if (state == State.Ended && IsClient) net.ClientTick(match, net.InterpDelay, e => Fx(e, false, true));
             else if (state == State.Playing)
             {
                 input.Poll(match.Local.Hero);
+                bool slowNow = net == null && slowMo && match.Mode != GameMode.Training && slowHold > 0;
+                slowHold -= dt;
+                slow = Mathf.MoveTowards(slow, slowNow ? slowMoAmount : 1, dt * (slowNow ? 10 : 2.2f));
                 if (hitstop > 0) hitstop -= dt; // freeze-frame on strong hits: the sim waits, input is kept
-                else acc += dt;
+                else acc += dt * slow;
                 while (acc >= DT)
                 {
                     cmds[0] = input.Take(match.Local.Hero); lastCmd = cmds[0];
@@ -217,12 +256,19 @@ namespace Arena.Game
             input.UpdateRumble(dt);
             denyFlash = Mathf.Max(0, denyFlash - dt);
             HeroModel.Tune = heroArt;
+            GoalFx.NetPunch = netPunch; GoalFx.NetStiff = netStiff; GoalFx.NetDamp = netDamp; GoalFx.ConfettiCount = confetti;
+            StadiumView.GoalFlash = goalFlash; StadiumView.GoalFlashTime = goalFlashTime;
             view.SetBloom(heroArt.bloom);
-            float vdt = state == State.Replay ? dt * replaySpeed : dt;
+            if (state != State.Playing) { slow = 1; slowHold = 0; if (state != State.Replay) Time.timeScale = 1; }
+            else Time.timeScale = slow; // частицы тоже замедляются
+            float vdt = state == State.Replay ? dt * replaySpeed : dt * slow;
             HeroModel.FrameDt = state == State.Paused || hitstop > 0 ? 0 : vdt;
             view.Sync(match, Time.time, vdt, state == State.Playing ? lastCmd : default);
             toastT = Mathf.Max(0, toastT - dt);
             UpdateCamera(dt);
+            Online.SnapRate = snapRate; Online.MinDelay = minInterpDelay; Online.PredictOn = predictOwnHero; Online.MaxQueue = inputQueue; Online.SimLagMs = simulatedPing;
+            sound.Master = masterVolume; sound.Sfx = sfxVolume; sound.Crowd = crowdVolume; sound.Music = musicVolume;
+            sound.Sync(match, cam, dt, state == State.Playing || state == State.Paused || state == State.Ended || state == State.Replay, state == State.Replay);
         }
 
         void HandleEvents()
@@ -234,12 +280,20 @@ namespace Arena.Game
         /// <summary>Эффекты события. live = false — событие из повтора гола: без вибрации, заморозки кадра и нового повтора.</summary>
         void Fx(SimEvent e, bool live, bool remote = false)
         {
+                if (state != State.Menu && state != State.Lobby) sound.OnEvent(match, e, live, remote); // фоновый матч в меню — без звуков ударов
                 switch (e.Kind)
                 {
                     case FxKind.Burst: view.Burst(e.X, e.Y, Mat.Of(e.Color), e.Count, e.Amount); break;
                     case FxKind.Shake: shake = Mathf.Max(shake, e.Amount); break;
                     case FxKind.Goal:
                         view.Burst(e.X, e.Y, e.Team == Team.Home ? Mat.Home : Mat.Away, 60, 1.6f);
+                        view.GoalHit(match, e.Team, e.X, e.Y, true);
+                        if (live || remote)
+                        {
+                            goalT0 = Time.unscaledTime; goalTeam = e.Team; goalScoreH = match.ScoreHome; goalScoreA = match.ScoreAway;
+                            goalScorer = FindScorer(e.Team);
+                            if (live && net == null && slowMo && match.Mode != GameMode.Training) { slowHold = slowMoAfter; slow = slowMoAmount; }
+                        }
                         if (live && replay && net == null && match.Mode != GameMode.Training && goalReplay.HasFrames) replayIn = Mathf.Max(replayDelay, celebrate);
                         break;
                     case FxKind.Rumble: if ((live || remote) && e.Player == match.Local) input.Rumble(e.Amount); break;
@@ -251,10 +305,7 @@ namespace Arena.Game
                         fovPunch = Mathf.Max(fovPunch, Mathf.Clamp01(e.Amount) * fovKick);
                         view.Burst(e.X, e.Y, Mat.Mist, (int)(6 + 10 * e.Amount), 0.6f + 0.6f * e.Amount);
                         break;
-                    case FxKind.Receive:
-                        audioSrc.pitch = 0.92f + Random.value * 0.16f;
-                        audioSrc.PlayOneShot(receiveClip, e.Player == match.Local ? 0.9f : 0.45f);
-                        break;
+                    case FxKind.Receive: break; // звук — в MatchAudio.OnEvent
                 }
         }
 
@@ -316,9 +367,34 @@ namespace Arena.Game
         }
 
         // ---------- camera ----------
+        /// <summary>Кто забил: последний коснувшийся из забившей команды, иначе ближайший к мячу из неё.</summary>
+        int FindScorer(Team team)
+        {
+            var b = match.Ball;
+            SimPlayer best = b.Last != null && b.Last.Team == team ? b.Last : b.Kicker != null && b.Kicker.Team == team ? b.Kicker : null;
+            if (best == null)
+            {
+                float bd = float.MaxValue;
+                foreach (var p in match.Players)
+                    if (p.Team == team && !p.Dummy) { float d = (p.X - b.X) * (p.X - b.X) + (p.Y - b.Y) * (p.Y - b.Y); if (d < bd) { bd = d; best = p; } }
+            }
+            return best != null ? match.Players.IndexOf(best) : -1;
+        }
+
+        bool GoalCamOn => goalCam && state == State.Playing && match.Freeze > 0 && match.Banner != "" && match.Mode != GameMode.Training
+                          && goalScorer >= 0 && goalScorer < match.Players.Count;
+
         Vector3 TargetCamPos(bool snap)
         {
             var you = match.Local; var b = match.Ball;
+            if (GoalCamOn)
+            {   // гол: камера подлетает к забившему
+                var sp = match.Players[goalScorer];
+                Vector3 f = W.Pos(sp.X, sp.Y);
+                float hl = Field.FH / 2 * W.S, hw = Field.FW / 2 * W.S;
+                f.x = Mathf.Clamp(f.x, -hl + 1.5f, hl - 1.5f); f.z = Mathf.Clamp(f.z, -hw + 1, hw - 1);
+                return f - Quaternion.Euler(snap ? goalCamTilt : camTilt, 0, 0) * Vector3.forward * goalCamDistance;
+            }
             float wy = state == State.Replay ? 0.1f : state == State.Menu || state == State.Lobby ? 0.2f : clipCam ? 0.45f : 0.6f; // повтор и съёмка — больше на мяч
             float tx = you.X * wy + b.X * (1 - wy), ty = you.Y * wy + b.Y * (1 - wy);
             Vector3 focus = W.Pos(tx, ty);
@@ -331,7 +407,7 @@ namespace Arena.Game
             return focus - rot * Vector3.forward * dist;
         }
 
-        float CamTiltTarget => state == State.Replay ? replayTilt : clipCam ? clipTilt : cameraTilt;
+        float CamTiltTarget => GoalCamOn ? goalCamTilt : state == State.Replay ? replayTilt : clipCam ? clipTilt : cameraTilt;
 
         void UpdateCamera(float dt)
         {
@@ -346,7 +422,7 @@ namespace Arena.Game
             }
             camTilt = Mathf.Lerp(camTilt, CamTiltTarget, 1 - Mathf.Exp(-4 * dt));
             var target = TargetCamPos(false);
-            camPos = Vector3.Lerp(camPos, target, 1 - Mathf.Exp((state == State.Replay ? -3 : -5) * dt));
+            camPos = Vector3.Lerp(camPos, target, 1 - Mathf.Exp((GoalCamOn ? -2.6f : state == State.Replay ? -3 : -5) * dt));
             fovPunch = Mathf.Max(0, fovPunch - dt * 18);
             cam.fieldOfView = cameraFov - fovPunch;
             camRot = Quaternion.Slerp(camRot, Quaternion.Euler(camTilt, 0, 0), 1 - Mathf.Exp(-6 * dt));
@@ -357,7 +433,42 @@ namespace Arena.Game
         }
 
         // ---------- HUD (temporary, IMGUI) ----------
-        GUIStyle big, mid, small, banner;
+        GUIStyle big, mid, small, banner, huge;
+
+        /// <summary>Пружинка 0 → 1 с перелётом (для надписи и счёта).</summary>
+        static float Spring(float t) => t <= 0 ? 0 : 1 - Mathf.Exp(-7 * t) * Mathf.Cos(13 * t);
+
+        /// <summary>«ГОЛ!» и крупный счёт: выскакивают пружинкой, цифра забившей команды меняется с «прыжком».</summary>
+        void GoalBanner(float w, float h)
+        {
+            float t = Time.unscaledTime - goalT0;
+            Color col = match.BannerTeam == Team.Home ? Mat.Home : Mat.Away;
+            var r = new Rect(0, h * 0.24f, w, 100);
+            float s = t > 6 ? 1 : Spring(t);
+            GUIUtility.ScaleAroundPivot(Vector2.one * Mathf.Max(0.01f, s), r.center);
+            Shadowed(r, BannerText(), banner, col);
+            GUI.matrix = Matrix4x4.identity;
+            if (match.Mode == GameMode.Training || t > 30) return;
+            float s2 = Spring(t - 0.15f);
+            if (s2 <= 0) return;
+            float y = h * 0.24f + 100;
+            var row = new Rect(w / 2 - 230, y, 460, 120);
+            GUIUtility.ScaleAroundPivot(Vector2.one * Mathf.Max(0.01f, s2), row.center);
+            bool flip = t > 0.6f; // сначала старый счёт, потом цифра забивших «прыгает» на новую
+            int hs = goalScoreH - (goalTeam == Team.Home && !flip ? 1 : 0), aw = goalScoreA - (goalTeam == Team.Away && !flip ? 1 : 0);
+            Shadowed(new Rect(w / 2 - 40, y - 6, 80, 120), ":", huge, Color.white);
+            Digit(hs, new Rect(w / 2 - 200, y, 160, 120), Mat.Home, goalTeam == Team.Home && flip ? t - 0.6f : -1);
+            Digit(aw, new Rect(w / 2 + 40, y, 160, 120), Mat.Away, goalTeam == Team.Away && flip ? t - 0.6f : -1);
+            GUI.matrix = Matrix4x4.identity;
+        }
+
+        void Digit(int v, Rect r, Color c, float popT)
+        {
+            var old = GUI.matrix;
+            if (popT >= 0) { float k = 1 + 0.7f * Mathf.Exp(-6 * popT) * Mathf.Cos(11 * popT); GUIUtility.ScaleAroundPivot(Vector2.one * k, r.center); }
+            Shadowed(r, v.ToString(), huge, c);
+            GUI.matrix = old;
+        }
         void Styles()
         {
             if (big != null) return;
@@ -365,6 +476,7 @@ namespace Arena.Game
             mid = new GUIStyle(GUI.skin.label) { fontSize = 22, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
             small = new GUIStyle(GUI.skin.label) { fontSize = 15, alignment = TextAnchor.UpperLeft, wordWrap = true };
             banner = new GUIStyle(GUI.skin.label) { fontSize = 72, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
+            huge = new GUIStyle(GUI.skin.label) { fontSize = 104, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
         }
 
         void Shadowed(Rect r, string text, GUIStyle st, Color c)
@@ -398,8 +510,7 @@ namespace Arena.Game
 
         void BannerOnly(float w, float h)
         {
-            if (match.Freeze > 0 && state == State.Playing && match.Banner != "")
-                Shadowed(new Rect(0, h * 0.35f, w, 100), BannerText(), banner, match.BannerTeam == Team.Home ? Mat.Home : Mat.Away);
+            if (match.Freeze > 0 && state == State.Playing && match.Banner != "") GoalBanner(w, h);
         }
 
         void ReplayGui(float w, float h)
@@ -424,7 +535,8 @@ namespace Arena.Game
             if (!training) { int c = Mathf.CeilToInt(match.Clock); score += "   " + (c / 60) + ":" + (c % 60).ToString("00"); }
             Shadowed(new Rect(16, 10, w * 0.4f, 30), score, small, new Color(0.85f, 0.92f, 0.9f));
             if (net != null) Shadowed(new Rect(16, 32, w * 0.6f, 30), NetHudText(), small, new Color(0.75f, 0.85f, 0.82f));
-            if (match.Freeze > 0 && state == State.Playing)
+            if (match.Freeze > 0 && state == State.Playing && match.Banner != "") GoalBanner(w, h);
+            else if (match.Freeze > 0 && state == State.Playing)
             {
                 string text = match.Banner != "" ? BannerText() : "ВПЕРЁД";
                 Color col = match.Banner == "" ? Mat.Chalk : match.BannerTeam == Team.Home ? Mat.Home : Mat.Away;
@@ -602,10 +714,10 @@ namespace Arena.Game
         /// <summary>Строка в углу: у друга — свой пинг до хоста, у хоста — пинг каждого друга.</summary>
         string NetHudText()
         {
-            if (!net.IsHost) return PingText(net.MyPing);
+            if (!net.IsHost) return PingText(net.MyPing) + (simulatedPing > 0 ? " + имитация " + simulatedPing + " мс" : "") + "   буфер " + Mathf.RoundToInt(net.InterpDelay * 1000) + " мс" + (predictOwnHero ? "   предсказание" : "");
             var sb = new System.Text.StringBuilder();
             foreach (var st in net.Roster) if (st.Slot != 0) sb.Append(sb.Length > 0 ? " · " : "").Append(st.Name).Append(": ").Append(PingText(st.Ping));
-            return sb.Length > 0 ? sb.ToString() : "друзей в комнате нет";
+            return (net.Direct ? "напрямую · " : "через Unity · ") + (sb.Length > 0 ? sb.ToString() : "друзей в комнате нет");
         }
 
         void LobbyGui(float w, float h)

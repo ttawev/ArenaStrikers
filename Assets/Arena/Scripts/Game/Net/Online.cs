@@ -66,6 +66,70 @@ namespace Arena.Game
             Object.DontDestroyOnLoad(go);
         }
 
+        // ---------- связь: через сервер Unity Relay или напрямую по IP ----------
+        // «Напрямую» — комната по коду остаётся (сервис Unity хранит только адрес хоста), но игра идёт без сервера-посредника:
+        // друг подключается к хосту по его IP. Для игры через интернет — общая виртуальная сеть (Radmin VPN, Tailscale, Hamachi)
+        // или одна домашняя сеть. Пинг по городу ~5–30 мс вместо ~200 через Европу.
+        public const ushort DirectPort = 7777;
+        public bool Direct { get; private set; }
+        public string DirectIp { get; private set; } = "";
+
+        /// <summary>Выбранная связь для новых комнат: "" — через Unity, иначе — IP этого компьютера, который увидит друг.</summary>
+        public static string LinkIp
+        {
+            get => PlayerPrefs.GetString("arena.link", "");
+            set { PlayerPrefs.SetString("arena.link", value ?? ""); PlayerPrefs.Save(); }
+        }
+
+        /// <summary>IPv4-адреса этого компьютера: сначала виртуальные сети (Radmin, Tailscale, Hamachi), потом домашняя.</summary>
+        public static List<(string ip, string label)> LocalAddresses()
+        {
+            var list = new List<(string ip, string label, int rank)>();
+#if !(UNITY_WEBGL && !UNITY_EDITOR)
+            try
+            {
+                foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (ni.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up) continue;
+                    if (ni.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Loopback) continue;
+                    foreach (var ua in ni.GetIPProperties().UnicastAddresses)
+                    {
+                        if (ua.Address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork) continue;
+                        var b = ua.Address.GetAddressBytes(); string ip = ua.Address.ToString();
+                        if (b[0] == 169 && b[1] == 254) continue; // «нет сети»
+                        string name = (ni.Name + " " + ni.Description).ToLowerInvariant();
+                        if (b[0] == 26 || name.Contains("radmin")) list.Add((ip, "Radmin VPN", 0));
+                        else if (b[0] == 100 && b[1] >= 64 && b[1] < 128 || name.Contains("tailscale")) list.Add((ip, "Tailscale", 1));
+                        else if (b[0] == 25 || name.Contains("hamachi")) list.Add((ip, "Hamachi", 2));
+                        else if (name.Contains("zerotier")) list.Add((ip, "ZeroTier", 3));
+                        else if (b[0] == 192 && b[1] == 168 || b[0] == 10 || b[0] == 172 && b[1] >= 16 && b[1] < 32) list.Add((ip, "домашняя сеть", 4));
+                        else list.Add((ip, "интернет", 5));
+                    }
+                }
+            }
+            catch (Exception e) { Debug.LogWarning("[Arena] адреса компьютера: " + e.Message); }
+#endif
+            list.Sort((a, c) => a.rank.CompareTo(c.rank));
+            var r = new List<(string, string)>(); foreach (var x in list) r.Add((x.ip, x.label));
+            return r;
+        }
+
+        /// <summary>Подпись выбранной связи для меню.</summary>
+        public static string LinkText()
+        {
+            string ip = LinkIp; if (ip == "") return "через Unity";
+            foreach (var a in LocalAddresses()) if (a.ip == ip) return "напрямую · " + a.label + " " + ip;
+            return "напрямую " + ip + " (адреса нет)";
+        }
+
+        /// <summary>Листать варианты связи: через Unity → адреса этого компьютера.</summary>
+        public static void CycleLink(int dir)
+        {
+            var opts = new List<string> { "" }; foreach (var a in LocalAddresses()) opts.Add(a.ip);
+            int i = opts.IndexOf(LinkIp); if (i < 0) i = 0;
+            LinkIp = opts[((i + dir) % opts.Count + opts.Count) % opts.Count];
+        }
+
         // ---------- создать / войти / выйти ----------
         public async void Host(string name, Hero hero)
         {
@@ -74,8 +138,14 @@ namespace Arena.Game
             {
                 Status = "Подключаюсь к сервисам Unity…";
                 await EnsureSignedIn(); EnsureNetworkManager();
-                Status = "Создаю комнату…";
-                var opts = new SessionOptions { MaxPlayers = 8, IsPrivate = true }.WithRelayNetwork();
+                string ip = LinkIp;
+                bool ipOk = ip != "" && LocalAddresses().Exists(a => a.ip == ip);
+                Direct = ipOk; DirectIp = ipOk ? ip : "";
+                Status = Direct ? "Создаю комнату (напрямую, " + ip + ")…" : "Создаю комнату…";
+                Debug.LogWarning("[Arena] комната: " + (Direct ? "напрямую, адрес для друзей " + ip + ":" + DirectPort : "через Unity Relay"));
+                var opts = new SessionOptions { MaxPlayers = 8, IsPrivate = true };
+                if (Direct) opts.WithDirectNetwork("0.0.0.0", ip, DirectPort); // слушаем все адреса, другу сообщаем выбранный
+                else opts.WithRelayNetwork();
                 session = await MultiplayerService.Instance.CreateSessionAsync(opts);
                 Code = session.Code; MySlot = 0;
                 Listen();
@@ -100,7 +170,11 @@ namespace Arena.Game
                 State = Phase.Lobby; Status = "";
                 SendHello();
             }
-            catch (Exception e) { Fail("Не удалось войти: " + e.Message); }
+            catch (Exception e)
+            {
+                Fail("Не удалось войти: " + e.Message +
+                     "\nЕсли комната «напрямую» — проверь, что вы оба в одной сети Radmin VPN (или в одной домашней) и брандмауэр Windows у хоста разрешил игру.");
+            }
         }
 
         public async void Leave()
@@ -235,12 +309,13 @@ namespace Arena.Game
             foreach (var p in m.Players) { w.WriteValueSafe((byte)p.Team); w.WriteValueSafe((byte)p.Hero); w.WriteValueSafe((sbyte)p.HumanSlot); }
             nm.CustomMessagingManager.SendNamedMessage("start", to, w, NetworkDelivery.ReliableSequenced);
             hookIds.Clear(); wallIds.Clear(); outEvents.Clear(); sendT = 0;
-            for (int i = 0; i < 8; i++) { inputs[i] = default; doneDash[i] = doneAbil[i] = doneBall[i] = 0; }
+            for (int i = 0; i < 8; i++) { inQ[i].Clear(); heldCmd[i] = default; pendDash[i] = pendAbil[i] = pendBall[i] = false; }
         }
 
         void OnStart(ulong from, FastBufferReader r)
         {
             r.ReadValueSafe(out byte mode); r.ReadValueSafe(out byte diff); r.ReadValueSafe(out byte n);
+            pred = null; reconciled = null; errOff = Vector2.zero; hist.Clear(); // новый матч — предсказание с нуля
             var seats = new List<Match.Seat>();
             for (int i = 0; i < n; i++)
             {
@@ -252,42 +327,133 @@ namespace Arena.Game
             MatchStarted?.Invoke((GameMode)mode, diff, seats);
         }
 
-        // ---------- ввод друзей (друг → хост) ----------
-        struct NetInput { public float Mx, My; public byte Held, Dash, Abil, Ball; }
-        readonly NetInput[] inputs = new NetInput[8];
-        readonly byte[] doneDash = new byte[8], doneAbil = new byte[8], doneBall = new byte[8];
-        byte myDash, myAbil, myBall; float inT;
+        // ---------- ввод друзей (друг → хост): по тикам, с номерами ----------
+        // Друг нумерует каждый свой шаг ввода (120 в секунду) и шлёт последние несколько — потеря пакета не страшна.
+        // Хост выполняет их строго по одному на свой шаг и в снимке сообщает номер последнего выполненного (Snap.Acks):
+        // так друг знает, какие свои шаги хост уже учёл, и может предсказывать своего героя (ClientStep).
+        public const float DT = 1f / 120;
+        struct TickIn { public uint Seq; public InputCommand C; }
+        public static bool PredictOn = true;
+        /// <summary>Как часто хост рассылает снимки, раз в секунду.</summary>
+        public static int SnapRate = 60;
+        /// <summary>Хост держит очередь ввода друга не длиннее этого (лишнее догоняется — иначе растёт задержка).</summary>
+        public static int MaxQueue = 4;
 
-        /// <summary>Друг: отправить ввод хосту (кнопки-нажатия считаются счётчиком, чтобы не теряться).</summary>
-        public void SendInput(InputCommand c, float dt)
+        // хост
+        readonly Queue<TickIn>[] inQ = { new Queue<TickIn>(), new Queue<TickIn>(), new Queue<TickIn>(), new Queue<TickIn>(), new Queue<TickIn>(), new Queue<TickIn>(), new Queue<TickIn>(), new Queue<TickIn>() };
+        readonly uint[] acked = new uint[8], queued = new uint[8];
+        readonly InputCommand[] heldCmd = new InputCommand[8];
+        readonly bool[] pendDash = new bool[8], pendAbil = new bool[8], pendBall = new bool[8];
+
+        // друг
+        uint mySeq, sentSeq; float tickAcc;
+        readonly List<TickIn> hist = new List<TickIn>();
+        bool wantDash, wantAbil, wantBall;
+        SimPlayer pred; Snap reconciled; Vector2 errOff;
+
+        static void WriteTick(FastBufferWriter w, TickIn t)
         {
-            if (c.Dash) myDash++; if (c.Ability) myAbil++; if (c.BallToMe) myBall++;
-            inT -= dt; if (inT > 0) return; inT = 1f / 60;
-            if (nm == null || !nm.IsConnectedClient) return;
-            using var w = new FastBufferWriter(32, Allocator.Temp);
-            w.WriteValueSafe(Mathf.FloatToHalf(c.MoveX)); w.WriteValueSafe(Mathf.FloatToHalf(c.MoveY));
-            w.WriteValueSafe((byte)((c.Kick ? 1 : 0) | (c.Lob ? 2 : 0) | (c.CurveLeft ? 4 : 0) | (c.CurveRight ? 8 : 0)));
-            w.WriteValueSafe(myDash); w.WriteValueSafe(myAbil); w.WriteValueSafe(myBall);
-            nm.CustomMessagingManager.SendNamedMessage("in", NetworkManager.ServerClientId, w, NetworkDelivery.UnreliableSequenced);
+            var c = t.C;
+            w.WriteValueSafe(t.Seq); w.WriteValueSafe(Mathf.FloatToHalf(c.MoveX)); w.WriteValueSafe(Mathf.FloatToHalf(c.MoveY));
+            w.WriteValueSafe((byte)((c.Kick ? 1 : 0) | (c.Lob ? 2 : 0) | (c.CurveLeft ? 4 : 0) | (c.CurveRight ? 8 : 0)
+                                  | (c.Dash ? 16 : 0) | (c.Ability ? 32 : 0) | (c.BallToMe ? 64 : 0)));
+        }
+
+        /// <summary>Друг, каждый кадр после ClientTick: свои шаги ввода (с номерами) — хосту, и свой герой — заранее, по предсказанию.</summary>
+        public void ClientStep(Match m, InputCommand frame, float dt)
+        {
+            var me = m.Local; if (me == null) return;
+            if (frame.Dash) wantDash = true; if (frame.Ability) wantAbil = true; if (frame.BallToMe) wantBall = true; // нажатие не теряется, даже если в этом кадре нет шага
+
+            // 1. новый снимок — сверка: герой как у хоста + заново все мои шаги, которые хост ещё не выполнил
+            var last = Snaps.Count > 0 ? Snaps[Snaps.Count - 1] : null;
+            int idx = m.Players.IndexOf(me);
+            if (last != null && last != reconciled && idx >= 0 && idx < last.N)
+            {
+                bool had = pred != null; float ox = had ? pred.X : 0, oy = had ? pred.Y : 0;
+                if (pred == null) pred = new SimPlayer { Id = me.Id, Team = me.Team, Hero = me.Hero, HumanSlot = me.HumanSlot };
+                pred.Hero = me.Hero;
+                NetSnapshot.ApplyPlayer(pred, last, last, idx, 1);
+                uint ack = last.Acks[Mathf.Clamp(MySlot, 0, 7)];
+                hist.RemoveAll(x => x.Seq <= ack);
+                if (PredictOn) foreach (var x in hist) m.PredictStep(pred, x.C, DT);
+                if (had)
+                {   // расхождение с хостом убираем плавно; большой скачок (разводка, телепорт, отброс) — сразу
+                    errOff += new Vector2(ox - pred.X, oy - pred.Y);
+                    if (errOff.magnitude > 150) errOff = Vector2.zero;
+                }
+                reconciled = last;
+            }
+
+            // 2. новые шаги ввода: запомнить, предсказать
+            tickAcc += dt;
+            while (tickAcc >= DT)
+            {
+                tickAcc -= DT;
+                var c = frame; c.Dash = wantDash; c.Ability = wantAbil; c.BallToMe = wantBall; wantDash = wantAbil = wantBall = false;
+                var t = new TickIn { Seq = ++mySeq, C = c };
+                hist.Add(t); if (hist.Count > 360) hist.RemoveAt(0);
+                if (pred != null && PredictOn) m.PredictStep(pred, c, DT);
+            }
+
+            // 3. отправить хосту последние шаги (каждый уходит до 6 раз — на случай потери пакета)
+            if (mySeq != sentSeq && nm != null && nm.IsConnectedClient && hist.Count > 0)
+            {
+                int n = Mathf.Min(6, hist.Count);
+                using var w = new FastBufferWriter(8 + n * 12, Allocator.Temp);
+                w.WriteValueSafe((byte)n);
+                for (int i = hist.Count - n; i < hist.Count; i++) WriteTick(w, hist[i]);
+                if (SimLagMs > 0) lagOut.Add((Time.unscaledTime + SimLagMs * 0.0005f, w.ToArray()));
+                else nm.CustomMessagingManager.SendNamedMessage("in", NetworkManager.ServerClientId, w, NetworkDelivery.UnreliableSequenced);
+                sentSeq = mySeq;
+            }
+
+            // 4. показать своего героя по предсказанию (сейчас), а не по снимку (в прошлом)
+            errOff *= Mathf.Exp(-dt * 10);
+            if (pred == null || !PredictOn || m.Phase != MatchPhase.Playing) return;
+            float px = me.X, py = me.Y;
+            me.X = pred.X + errOff.x; me.Y = pred.Y + errOff.y; me.Vx = pred.Vx; me.Vy = pred.Vy; me.Fx = pred.Fx; me.Fy = pred.Fy;
+            me.DashT = pred.DashT; me.DashCd = pred.DashCd;
+            me.Charging = pred.Charging; me.Charge = pred.Charge; me.Lobbing = pred.Lobbing; me.LobCharge = pred.LobCharge;
+            me.Curving = pred.Curving; me.CurveCharge = pred.CurveCharge;
+            if (m.Ball.Owner == me) { m.Ball.X += me.X - px; m.Ball.Y += me.Y - py; } // мяч у ног — вместе с героем
         }
 
         void OnInput(ulong from, FastBufferReader r)
         {
             var s = Roster.Find(x => x.ClientId == from); if (s == null) return;
-            r.ReadValueSafe(out ushort mx); r.ReadValueSafe(out ushort my);
-            var x = new NetInput { Mx = Mathf.HalfToFloat(mx), My = Mathf.HalfToFloat(my) };
-            r.ReadValueSafe(out x.Held); r.ReadValueSafe(out x.Dash); r.ReadValueSafe(out x.Abil); r.ReadValueSafe(out x.Ball);
-            inputs[s.Slot] = x;
+            int slot = Mathf.Clamp(s.Slot, 0, 7);
+            r.ReadValueSafe(out byte n);
+            for (int i = 0; i < n; i++)
+            {
+                r.ReadValueSafe(out uint seq); r.ReadValueSafe(out ushort mx); r.ReadValueSafe(out ushort my); r.ReadValueSafe(out byte b);
+                if (seq <= queued[slot] || seq <= acked[slot]) continue; // уже есть / уже выполнен
+                var c = new InputCommand
+                {
+                    MoveX = Mathf.HalfToFloat(mx), MoveY = Mathf.HalfToFloat(my),
+                    Kick = (b & 1) != 0, Lob = (b & 2) != 0, CurveLeft = (b & 4) != 0, CurveRight = (b & 8) != 0,
+                    Dash = (b & 16) != 0, Ability = (b & 32) != 0, BallToMe = (b & 64) != 0,
+                };
+                inQ[slot].Enqueue(new TickIn { Seq = seq, C = c }); queued[slot] = seq;
+            }
         }
 
-        /// <summary>Хост: команда для слота на один шаг симуляции.</summary>
+        /// <summary>Хост: команда для места на один шаг симуляции — следующий шаг ввода друга по порядку.</summary>
         public InputCommand TakeInput(int slot)
         {
-            var x = inputs[slot];
-            var c = new InputCommand { MoveX = x.Mx, MoveY = x.My, Kick = (x.Held & 1) != 0, Lob = (x.Held & 2) != 0, CurveLeft = (x.Held & 4) != 0, CurveRight = (x.Held & 8) != 0 };
-            if (doneDash[slot] != x.Dash) { c.Dash = true; doneDash[slot]++; }
-            if (doneAbil[slot] != x.Abil) { c.Ability = true; doneAbil[slot]++; }
-            if (doneBall[slot] != x.Ball) { c.BallToMe = true; doneBall[slot]++; }
+            if (slot < 0 || slot > 7) return default;
+            var q = inQ[slot];
+            while (q.Count > MaxQueue)
+            {   // очередь разрослась (рывок связи) — пропускаем старые шаги, но нажатия не теряем
+                var d = q.Dequeue(); acked[slot] = d.Seq;
+                pendDash[slot] |= d.C.Dash; pendAbil[slot] |= d.C.Ability; pendBall[slot] |= d.C.BallToMe;
+            }
+            InputCommand c;
+            if (q.Count > 0) { var x = q.Dequeue(); acked[slot] = x.Seq; c = x.C; }
+            else c = heldCmd[slot]; // шаг не пришёл вовремя — держим прошлые кнопки (без повторных нажатий)
+            c.Dash |= pendDash[slot]; c.Ability |= pendAbil[slot]; c.BallToMe |= pendBall[slot];
+            pendDash[slot] = pendAbil[slot] = pendBall[slot] = false;
+            var held = c; held.Dash = held.Ability = held.BallToMe = false; heldCmd[slot] = held;
             return c;
         }
 
@@ -301,12 +467,12 @@ namespace Arena.Game
 
         public void HostTick(Match m, float simTime, float dt)
         {
-            sendT -= dt; if (sendT > 0) return; sendT = 1f / 30;
+            sendT -= dt; if (sendT > 0) return; sendT += 1f / Mathf.Max(10, SnapRate); if (sendT < 0) sendT = 0;
             var to = Others();
             if (to.Count > 0)
             {
                 using var w = new FastBufferWriter(1024, Allocator.Temp, 16384);
-                NetSnapshot.Write(w, m, simTime, outEvents, hookIds, wallIds);
+                NetSnapshot.Write(w, m, simTime, outEvents, hookIds, wallIds, acked);
                 nm.CustomMessagingManager.SendNamedMessage("snap", to, w, w.Length > 1100 ? NetworkDelivery.ReliableFragmentedSequenced : NetworkDelivery.UnreliableSequenced);
             }
             outEvents.Clear();
@@ -315,15 +481,55 @@ namespace Arena.Game
         }
 
         float timeOffset = float.NaN; // время хоста минус своё
+        float lastArrive, jitter = 0.02f;
+        /// <summary>Буфер сглаживания у друга, с: полтора интервала снимков плюс запас на неровность связи.</summary>
+        public float InterpDelay => Mathf.Clamp(1.5f / Mathf.Max(10, SnapRate) + 2.5f * jitter, MinDelay, 0.15f);
+        public static float MinDelay = 0.035f;
         float lastEventT = -1;
 
+        // ---------- имитация плохой связи (для проверки на одном компьютере) ----------
+        /// <summary>Друг: искусственный пинг, мс (половина — на ввод хосту, половина — на снимки). 0 — выкл.</summary>
+        public static int SimLagMs;
+        readonly List<(float t, byte[] data)> lagIn = new List<(float, byte[])>(), lagOut = new List<(float, byte[])>();
+
         void OnSnap(ulong from, FastBufferReader r)
+        {
+            if (SimLagMs > 0) { lagIn.Add((Time.unscaledTime + SimLagMs * 0.0005f, r.ToArray())); return; }
+            ReadSnap(r);
+        }
+
+        void FlushLag()
+        {
+            float now = Time.unscaledTime;
+            while (lagIn.Count > 0 && (lagIn[0].t <= now || SimLagMs <= 0))
+            {
+                var d = lagIn[0].data; lagIn.RemoveAt(0);
+                using var r = new FastBufferReader(d, Allocator.Temp); ReadSnap(r);
+            }
+            while (lagOut.Count > 0 && (lagOut[0].t <= now || SimLagMs <= 0))
+            {
+                var d = lagOut[0].data; lagOut.RemoveAt(0);
+                if (nm == null || !nm.IsConnectedClient) continue;
+                using var w = new FastBufferWriter(d.Length + 8, Allocator.Temp); w.WriteBytesSafe(d);
+                nm.CustomMessagingManager.SendNamedMessage("in", NetworkManager.ServerClientId, w, NetworkDelivery.UnreliableSequenced);
+            }
+        }
+
+        void ReadSnap(FastBufferReader r)
         {
             Snap s;
             try { s = NetSnapshot.Read(r); } catch (Exception e) { Debug.LogWarning("[Arena] плохой снимок: " + e.Message); return; }
             if (Snaps.Count > 0 && s.T <= Snaps[Snaps.Count - 1].T) return; // старый
             Snaps.Add(s);
-            if (Snaps.Count > 40) Snaps.RemoveAt(0);
+            if (Snaps.Count > 60) Snaps.RemoveAt(0);
+            // насколько неровно приходят снимки: от этого зависит, сколько держать про запас (буфер сглаживания)
+            float now = Time.unscaledTime;
+            if (lastArrive > 0)
+            {
+                float gap = now - lastArrive, dev = Mathf.Abs(gap - 1f / SnapRate);
+                jitter = dev > jitter ? Mathf.Lerp(jitter, dev, 0.25f) : Mathf.Lerp(jitter, dev, 0.02f);
+            }
+            lastArrive = now;
             float off = s.T - Time.unscaledTime;
             timeOffset = float.IsNaN(timeOffset) ? off : (off > timeOffset ? Mathf.Lerp(timeOffset, off, 0.3f) : Mathf.Lerp(timeOffset, off, 0.03f));
         }
@@ -331,6 +537,7 @@ namespace Arena.Game
         /// <summary>Друг: показать матч на момент «сейчас минус задержка»; fx получает события этого отрезка.</summary>
         public void ClientTick(Match m, float delay, Action<SimEvent> fx)
         {
+            FlushLag();
             if (Snaps.Count == 0 || float.IsNaN(timeOffset)) return;
             float rt = Time.unscaledTime + timeOffset - delay;
             int i = Snaps.Count - 1;

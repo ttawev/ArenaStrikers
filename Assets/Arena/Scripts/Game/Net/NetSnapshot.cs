@@ -12,6 +12,7 @@ namespace Arena.Game
         public const int PF = 26; // чисел на героя
         public float T, Clock, Freeze;
         public byte ScoreH, ScoreA, Phase, BannerTeam; public bool Banner;
+        public uint[] Acks = new uint[8]; // по месту: последний выполненный хостом тик ввода (для предсказания у друга)
         public int N; public float[] P = new float[PF * 8]; public byte[] PFlags = new byte[8]; public sbyte[] PCurv = new sbyte[8];
         public float[] B = new float[11]; public sbyte BOwner, BLast, BFireBy; public bool BHook;
         public readonly List<HookS> Hooks = new List<HookS>(); public readonly List<WallS> Walls = new List<WallS>();
@@ -29,9 +30,10 @@ namespace Arena.Game
         static sbyte Idx(Match m, SimPlayer p) => p == null ? (sbyte)-1 : (sbyte)m.Players.IndexOf(p);
 
         // ---------- хост: запись ----------
-        public static void Write(FastBufferWriter w, Match m, float simTime, List<SimEvent> evts, Dictionary<Hook, ushort> hookIds, Dictionary<IceWall, ushort> wallIds)
+        public static void Write(FastBufferWriter w, Match m, float simTime, List<SimEvent> evts, Dictionary<Hook, ushort> hookIds, Dictionary<IceWall, ushort> wallIds, uint[] acks)
         {
             w.WriteValueSafe(simTime); w.WriteValueSafe(m.Clock); H(w, m.Freeze);
+            for (int i = 0; i < 8; i++) w.WriteValueSafe(acks != null && i < acks.Length ? acks[i] : 0u);
             w.WriteValueSafe((byte)m.ScoreHome); w.WriteValueSafe((byte)m.ScoreAway); w.WriteValueSafe((byte)m.Phase);
             w.WriteValueSafe(m.Banner != ""); w.WriteValueSafe((byte)m.BannerTeam);
             w.WriteValueSafe((byte)m.Players.Count);
@@ -87,6 +89,7 @@ namespace Arena.Game
         {
             var s = new Snap();
             s.T = F(r); s.Clock = F(r); s.Freeze = H(r);
+            for (int i = 0; i < 8; i++) r.ReadValueSafe(out s.Acks[i]);
             r.ReadValueSafe(out s.ScoreH); r.ReadValueSafe(out s.ScoreA); r.ReadValueSafe(out s.Phase);
             r.ReadValueSafe(out s.Banner); r.ReadValueSafe(out s.BannerTeam);
             r.ReadValueSafe(out byte n); s.N = Mathf.Min(n, 8);
@@ -150,9 +153,15 @@ namespace Arena.Game
             m.ScoreHome = b.ScoreH; m.ScoreAway = b.ScoreA; m.Phase = (MatchPhase)b.Phase;
             m.BannerTeam = (Team)b.BannerTeam;
             m.Banner = !b.Banner ? "" : m.Local != null && m.BannerTeam == m.Local.Team ? "ГОЛ!" : "ПРОПУСТИЛ"; // надпись — со стороны этого игрока
-            for (int i = 0; i < b.N && i < m.Players.Count; i++)
+            for (int i = 0; i < b.N && i < m.Players.Count; i++) ApplyPlayer(m.Players[i], a, b, i, t);
+            ApplyRest(m, a, b, t);
+        }
+
+        /// <summary>Состояние одного героя между снимками a и b (t = 1 — ровно как в b).</summary>
+        public static void ApplyPlayer(SimPlayer p, Snap a, Snap b, int i, float t)
+        {
             {
-                var p = m.Players[i]; int o = i * Snap.PF; var A = a.P; var B = b.P;
+                int o = i * Snap.PF; var A = a.P; var B = b.P;
                 bool jump = Mathf.Abs(A[o] - B[o]) + Mathf.Abs(A[o + 1] - B[o + 1]) > 200; // телепорт, начало розыгрыша — без плавного перехода
                 float tt = jump ? 1 : t;
                 p.X = Mathf.Lerp(A[o], B[o], tt); p.Y = Mathf.Lerp(A[o + 1], B[o + 1], tt);
@@ -165,6 +174,10 @@ namespace Arena.Game
                 p.TpFx = B[o + 20]; p.TpFy = B[o + 21]; p.CurveCd = B[o + 22]; p.InvisT = B[o + 23]; p.InvisCd = B[o + 24]; p.WallCd = B[o + 25];
                 p.Charging = (b.PFlags[i] & 1) != 0; p.Lobbing = (b.PFlags[i] & 2) != 0; p.Curving = b.PCurv[i];
             }
+        }
+
+        static void ApplyRest(Match m, Snap a, Snap b, float t)
+        {
             var ball = m.Ball;
             bool bj = a.BOwner != b.BOwner || Mathf.Abs(a.B[0] - b.B[0]) + Mathf.Abs(a.B[1] - b.B[1]) > 300;
             float bt = bj ? 1 : t;

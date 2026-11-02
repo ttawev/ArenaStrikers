@@ -153,7 +153,7 @@ namespace Arena.Game
             var it = new Item { El = el };
             int idx = p.Items.Count; p.Items.Add(it);
             el.RegisterCallback<PointerEnterEvent>(e => SetIndex(p, p.Items.IndexOf(it)));
-            el.RegisterCallback<ClickEvent>(e => { SetIndex(p, p.Items.IndexOf(it)); it.Submit?.Invoke(); });
+            el.RegisterCallback<ClickEvent>(e => { SetIndex(p, p.Items.IndexOf(it)); MatchAudio.Ui(UiSound.Confirm); it.Submit?.Invoke(); });
             parent.Add(el);
             return it;
         }
@@ -174,8 +174,8 @@ namespace Arena.Game
             var v = L("", "selector-value", fHead);
             var ra = L("›", "selector-arrow"); ra.pickingMode = PickingMode.Position;
             el.Add(la); el.Add(v); el.Add(ra);
-            la.RegisterCallback<ClickEvent>(e => { left(); e.StopPropagation(); });
-            ra.RegisterCallback<ClickEvent>(e => { right(); e.StopPropagation(); });
+            la.RegisterCallback<ClickEvent>(e => { MatchAudio.Ui(UiSound.Move); left(); e.StopPropagation(); });
+            ra.RegisterCallback<ClickEvent>(e => { MatchAudio.Ui(UiSound.Move); right(); e.StopPropagation(); });
             refreshers.Add(() => { var s = value(); if (v.text != s) v.text = s; });
             var it = AddItem(p, parent, el); it.Left = left; it.Right = right; it.Submit = right;
             return it;
@@ -224,7 +224,15 @@ namespace Arena.Game
             s.Add(L("футбол со способностями · до 8 игроков", "subtitle"));
             Button(main, s, "Играть", () => Show(Screen.Heroes), "item-primary");
             Button(main, s, "Онлайн с друзьями", () => Show(Screen.Online));
-            Button(main, s, "Выход", () => host.Quit());
+            Selector(main, s, "Звук", () => MatchAudio.SoundOn ? "ВКЛ" : "ВЫКЛ",
+                () => MatchAudio.SoundOn = !MatchAudio.SoundOn, () => MatchAudio.SoundOn = !MatchAudio.SoundOn);
+            Selector(main, s, "Трибуны", () => MatchAudio.CrowdOn ? "ВКЛ" : "ВЫКЛ",
+                () => MatchAudio.CrowdOn = !MatchAudio.CrowdOn, () => MatchAudio.CrowdOn = !MatchAudio.CrowdOn);
+            Selector(main, s, "Музыка", () => MatchAudio.MusicOn ? "ВКЛ" : "ВЫКЛ",
+                () => MatchAudio.MusicOn = !MatchAudio.MusicOn, () => MatchAudio.MusicOn = !MatchAudio.MusicOn);
+#if !(UNITY_WEBGL && !UNITY_EDITOR)
+            Button(main, s, "Выход", () => host.Quit()); // в браузере выйти — значит закрыть вкладку
+#endif
             var sp = new VisualElement(); sp.AddToClassList("spacer"); sp.pickingMode = PickingMode.Ignore; s.Add(sp);
             s.Add(L("↑↓ — выбор   ←→ — значение   A / Enter — ОК   B / Esc — назад", "hints"));
         }
@@ -261,8 +269,12 @@ namespace Arena.Game
             online = NewPage(); var s = Side(online);
             s.Add(L("ОНЛАЙН", "header", fHead));
             s.Add(L("Создай комнату и отправь друзьям код. Герой — тот, что выбран на экране «Играть», в комнате его можно поменять.", "note"));
-            Field(online, s, "Имя", () => host.PlayerName, v => host.PlayerName = v, 16, () => SetIndex(online, 1), false);
-            Button(online, s, "Создать комнату", () => { host.CreateRoom(); }, "item-primary");
+            Item create = null;
+            Field(online, s, "Имя", () => host.PlayerName, v => host.PlayerName = v, 16, () => SetIndex(online, online.Items.IndexOf(create)), false);
+#if !(UNITY_WEBGL && !UNITY_EDITOR)
+            Selector(online, s, "Связь", Online.LinkText, () => Online.CycleLink(-1), () => Online.CycleLink(1)); // через Unity или напрямую (Radmin VPN, домашняя сеть)
+#endif
+            create = Button(online, s, "Создать комнату", () => { host.CreateRoom(); }, "item-primary");
             s.Add(L("— или войди в комнату друга —", "divider"));
             Field(online, s, "Код", () => host.JoinCode, v => host.JoinCode = v, 12, () => TryJoin(), true);
             Button(online, s, "Войти по коду", () => TryJoin());
@@ -427,16 +439,18 @@ namespace Arena.Game
             else if (dir != 0) { repeatT -= dt; if (repeatT <= 0) { fire = true; repeatT = 0.12f; } }
             if (fire)
             {
+                int was = p.Index;
                 if (dir == 1) SetIndex(p, p.Index - 1);
                 else if (dir == 2) SetIndex(p, p.Index + 1);
                 else if (dir == 3) it.Left?.Invoke();
                 else if (dir == 4) it.Right?.Invoke();
+                if (p.Index != was || (dir >= 3 && (it.Left != null || it.Right != null))) MatchAudio.Ui(UiSound.Move);
             }
 
             bool submit = (gp != null && gp.buttonSouth.wasPressedThisFrame) || (kb != null && (kb.enterKey.wasPressedThisFrame || kb.numpadEnterKey.wasPressedThisFrame || (!typing && kb.spaceKey.wasPressedThisFrame)));
             bool back = (gp != null && gp.buttonEast.wasPressedThisFrame) || (kb != null && (kb.escapeKey.wasPressedThisFrame || (!typing && kb.backspaceKey.wasPressedThisFrame)));
-            if (submit) it.Submit?.Invoke();
-            else if (back) p.Back?.Invoke();
+            if (submit) { MatchAudio.Ui(UiSound.Confirm); it.Submit?.Invoke(); }
+            else if (back && p.Back != null) { MatchAudio.Ui(UiSound.Back); p.Back.Invoke(); }
         }
     }
 }

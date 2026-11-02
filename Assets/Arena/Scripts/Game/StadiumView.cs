@@ -30,7 +30,7 @@ namespace Arena.Game
         // ---------- ночные огни ----------
         void BuildNightLights()
         {   // неоновая полоса по краю трибун и тёплые фонари по верху задних стенок — светятся и дают ореол
-            var neon = Mat.Glow(new Color(0.25f, 1.3f, 2.2f));
+            var neon = new Material(Mat.Glow(new Color(0.25f, 1.3f, 2.2f))); neonMat = neon; // своя копия: мигает после гола
             var lamp = Mat.Glow(new Color(2.6f, 2.2f, 1.7f));
             var cube = new Vector3(1, 1, 1);
             foreach (var sd in Sides())
@@ -310,6 +310,14 @@ namespace Arena.Game
         }
         // Мачты прожекторов прямо у углов поля (как на референсе): тонкий столб, панель из ламп,
         // мягкий луч (конус с прозрачностью, тающей к земле), тёплый свет слева и холодный справа.
+        readonly System.Collections.Generic.List<Light> spots = new System.Collections.Generic.List<Light>();
+        readonly System.Collections.Generic.List<Color> spotCols = new System.Collections.Generic.List<Color>();
+        /// <summary>Вспышки прожекторов после гола: сила (0 — выкл), длительность, с.</summary>
+        public static float GoalFlash = 1.6f, GoalFlashTime = 1.8f;
+        readonly System.Collections.Generic.List<Material> pools = new System.Collections.Generic.List<Material>();
+        readonly System.Collections.Generic.List<Color> poolCols = new System.Collections.Generic.List<Color>();
+        Material neonMat;
+
         void BuildFloodlights()
         {
             const float H = 1400, C = 95; // высота мачты (выше — свет ложится шире и ровнее), отступ от угла поля
@@ -336,7 +344,8 @@ namespace Arena.Game
                 // вместо геометрического луча (сверху он выглядит плоским листом) — мягкое световое пятно на газоне:
                 // широкое тёплое/холодное сияние, плавно тающее к краям, вытянутое от мачты к центру поля
                 Vector3 flat = new Vector3(d.x, 0, d.z).normalized;
-                var pool = Shapes.MeshObj(FlatQuad(), root, PoolMat(lc, 0.075f), "LightPool").transform;
+                var poolM = PoolMat(lc, 0.075f); pools.Add(poolM); poolCols.Add(new Color(lc.r, lc.g, lc.b, 0.075f));
+                var pool = Shapes.MeshObj(FlatQuad(), root, poolM, "LightPool").transform;
                 pool.position = W.Pos(tx, ty, 0.3f) - flat * 1.2f; pool.rotation = Quaternion.LookRotation(flat, Vector3.up);
                 pool.localScale = new Vector3(10f, 1, 13f);
                 var core = Shapes.MeshObj(FlatQuad(), root, PoolMat(lc, 0.035f), "LightPoolCore").transform;   // яркая сердцевина ближе к мачте
@@ -347,6 +356,7 @@ namespace Arena.Game
                 var l = lgo.AddComponent<Light>();
                 l.type = LightType.Spot; l.color = lc; l.intensity = 3.2f; l.range = len * 2f; l.spotAngle = 100; l.innerSpotAngle = 10; // очень мягкий край
                 l.shadows = LightShadows.None;
+                spots.Add(l); spotCols.Add(lc);
                 // пальмы у мачты
                 Palm(x + (x < 0 ? -40 : 40), y + (y < 0 ? 30 : -30), 1f);
                 Palm(x + (x < 0 ? -30 : 30), y + (y < 0 ? -45 : 45), 0.75f);
@@ -554,9 +564,30 @@ namespace Arena.Game
             SyncShadows(m);
             var cam = Camera.main;
             if (cam != null) foreach (var g in glares) g.rotation = Quaternion.FromToRotation(Vector3.up, (cam.transform.position - g.position).normalized);
-            // лампы прожекторов слегка мерцают
+            // лампы прожекторов слегка мерцают; после гола — стробоскоп в цвет забившей команды, мачты по очереди
+            float since = 4f - goalT, flash = GoalFlashTime > 0 ? Mathf.Clamp01(1 - since / GoalFlashTime) : 0;
             for (int i = 0; i < lampMats.Count; i++)
-                lampMats[i].SetColor("_BaseColor", new Color(3f, 2.8f, 2.4f) * (0.97f + 0.03f * Mathf.PerlinNoise(t * 3, i)));
+            {
+                float pulse = flash * Mathf.Max(0, Mathf.Sin(t * 22 + i * 1.6f)) * GoalFlash;
+                Color baseC = new Color(3f, 2.8f, 2.4f) * (0.97f + 0.03f * Mathf.PerlinNoise(t * 3, i));
+                lampMats[i].SetColor("_BaseColor", Color.Lerp(baseC, gc * 4f, Mathf.Clamp01(pulse)) * (1 + pulse));
+                if (i < spots.Count)
+                {
+                    spots[i].intensity = 3.2f * (1 + pulse * 3f);
+                    spots[i].color = Color.Lerp(spotCols[i], gc, Mathf.Clamp01(pulse * 0.8f));
+                }
+                if (i < pools.Count)
+                {   // световое пятно на газоне вспыхивает цветом команды — его видно в кадре всегда
+                    var pc = Color.Lerp(poolCols[i], new Color(gc.r, gc.g, gc.b, 0.5f), Mathf.Clamp01(pulse));
+                    pools[i].SetColor("_BaseColor", pc);
+                }
+            }
+            if (neonMat != null)
+            {   // неон по краю трибун: после гола мигает цветом команды
+                float np = flash * GoalFlash * (Mathf.Sin(t * 16) > 0 ? 1 : 0.15f);
+                var nc = Color.Lerp(new Color(0.25f, 1.3f, 2.2f), gc * 3.5f, Mathf.Clamp01(np)); nc.a = 1;
+                neonMat.SetColor("_BaseColor", nc);
+            }
         }
 
         // вспышки телефонов на трибунах

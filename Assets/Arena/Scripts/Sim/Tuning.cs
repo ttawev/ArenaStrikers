@@ -19,6 +19,9 @@ namespace Arena.Sim
         [Tooltip("Отскок от бортов")] [Range(0.3f, 1)] public float bounce = 0.75f;
         [Tooltip("Сила рывка")] [Range(500, 1400)] public float dashPow = 880;
         [Tooltip("Перезарядка рывка, с")] [Range(0.6f, 5)] public float dashCd = 2.2f;
+        [Tooltip("Боты: подкат рывком сзади — с какого расстояния до соперника с мячом")] [Range(60, 300)] public float tackleReach = 175;
+        [Tooltip("Боты: подкат сзади только если соперник дальше этого от наших ворот (иначе мяч может улететь в свои ворота)")] [Range(0, 2400)] public float tackleSafeDepth = 800;
+        [Tooltip("Боты: охота до подката сзади (умножается на уровень сложности)")] [Range(0, 1)] public float tackleEager = 0.5f;
 
         [Header("Приём мяча")]
         [Tooltip("Принимать и отбирать мяч любой стороной (выкл. — только лицом)")] public bool receiveAnySide = true;
