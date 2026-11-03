@@ -21,6 +21,8 @@ namespace Arena.Game
         int DiffIndex { get; set; }
         string PlayerName { get; set; }
         string JoinCode { get; set; }
+        string ServerAddress { get; set; }   // адрес своего выделенного сервера (IP или IP:порт)
+        void JoinServer();
         string NetError { get; }
         Online Net { get; }
         Team RoomTeam { get; }
@@ -235,6 +237,7 @@ namespace Arena.Game
 #endif
             var sp = new VisualElement(); sp.AddToClassList("spacer"); sp.pickingMode = PickingMode.Ignore; s.Add(sp);
             s.Add(L("↑↓ — выбор   ←→ — значение   A / Enter — ОК   B / Esc — назад", "hints"));
+            s.Add(L("версия " + Online.NetVersion, "hints")); // у друзей и на сервере должна быть та же
         }
 
         void BuildHeroes()
@@ -278,6 +281,11 @@ namespace Arena.Game
             s.Add(L("— или войди в комнату друга —", "divider"));
             Field(online, s, "Код", () => host.JoinCode, v => host.JoinCode = v, 12, () => TryJoin(), true);
             Button(online, s, "Войти по коду", () => TryJoin());
+#if !(UNITY_WEBGL && !UNITY_EDITOR)
+            s.Add(L("— или свой сервер —", "divider"));
+            Field(online, s, "Сервер", () => host.ServerAddress, v => host.ServerAddress = v, 40, () => TryServer(), false);
+            Button(online, s, "Подключиться к серверу", () => TryServer());
+#endif
             errorLabel = L("", "error"); s.Add(errorLabel);
             refreshers.Add(() => { string e = host.NetError ?? ""; if (errorLabel.text != e) errorLabel.text = e; errorLabel.EnableInClassList("hidden", e == ""); });
             var sp = new VisualElement(); sp.AddToClassList("spacer"); sp.pickingMode = PickingMode.Ignore; s.Add(sp);
@@ -286,6 +294,7 @@ namespace Arena.Game
         }
 
         void TryJoin() { if (!string.IsNullOrWhiteSpace(host.JoinCode)) host.JoinRoom(); }
+        void TryServer() { if (!string.IsNullOrWhiteSpace(host.ServerAddress)) host.JoinServer(); }
 
         void BuildWait()
         {
@@ -313,11 +322,11 @@ namespace Arena.Game
         {
             var net = host.Net;
             roomItemsBox.Clear(); room.Items.Clear();
-            Button(room, roomItemsBox, "Скопировать код", () => { GUIUtility.systemCopyBuffer = net.Code; }, "item-small");
+            Button(room, roomItemsBox, net.ViaServer ? "Скопировать адрес" : "Скопировать код", () => { GUIUtility.systemCopyBuffer = net.Code; }, "item-small");
             Selector(room, roomItemsBox, "Герой", () => HName[Mathf.Clamp(host.HeroIndex, 0, 5)], () => host.SetRoomHero((host.HeroIndex + 5) % 6), () => host.SetRoomHero((host.HeroIndex + 1) % 6));
             Selector(room, roomItemsBox, "Команда", () => host.RoomTeam == Team.Home ? "Синие" : "Красные",
                      () => host.SetRoomTeam(host.RoomTeam == Team.Home ? Team.Away : Team.Home), () => host.SetRoomTeam(host.RoomTeam == Team.Home ? Team.Away : Team.Home));
-            if (net.IsHost)
+            if (net.IsHost || net.IsLeader) // на своём сервере комнатой управляет главный — тот, кто вошёл первым
             {
                 Selector(room, roomItemsBox, "Формат", () => ModeName[Math.Max(0, Array.IndexOf(RoomModes, net.Mode))],
                          () => net.SetMode(RoomModes[(Math.Max(0, Array.IndexOf(RoomModes, net.Mode)) + 2) % 3], net.Difficulty),
@@ -326,7 +335,7 @@ namespace Arena.Game
                          () => net.SetMode(net.Mode, Math.Max(0, net.Difficulty - 1)), () => net.SetMode(net.Mode, Math.Min(2, net.Difficulty + 1)));
                 Button(room, roomItemsBox, "НАЧАТЬ МАТЧ", () => host.StartRoomMatch(), "item-primary");
             }
-            else roomItemsBox.Add(L("Ждём, пока хост начнёт матч…", "note"));
+            else roomItemsBox.Add(L(net.ViaServer ? "Ждём, пока главный (вошёл первым) начнёт матч…" : "Ждём, пока хост начнёт матч…", "note"));
             Button(room, roomItemsBox, "Выйти из комнаты", () => host.LeaveRoom(), "item-small");
             room.Index = Mathf.Clamp(room.Index, 0, room.Items.Count - 1);
             SetIndex(room, room.Index);
@@ -405,7 +414,7 @@ namespace Arena.Game
                 if (connecting) { if (waitStatus.text != net.Status) waitStatus.text = net.Status; }
                 else
                 {
-                    string sig = net.IsHost + "/" + net.State;
+                    string sig = net.IsHost + "/" + net.IsLeader + "/" + net.State;
                     if (sig != roomSig) { roomSig = sig; RebuildRoomItems(); }
                     RefreshRoster();
                 }

@@ -1,0 +1,16 @@
+# Автозапуск сервера на VPS (Linux, systemd). Сервер сам поднимается после перезагрузки и при падении.
+# Установка: см. README.md рядом.
+[Unit]
+Description=Arena Strikers dedicated server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=arena
+WorkingDirectory=/home/arena/server
+ExecStart=/home/arena/server/ArenaServer.x86_64 -batchmode -nographics -server -port 7777 -logFile -
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

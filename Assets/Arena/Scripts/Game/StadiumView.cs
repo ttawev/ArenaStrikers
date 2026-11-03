@@ -484,14 +484,15 @@ namespace Arena.Game
             {
                 float a = (i + 0.5f) / count;
                 if (scoreboard && Mathf.Abs(a - 0.5f) < 0.6f / count) continue; // середина дальнего борта — табло
-                var pos = Vector3.Lerp(W.Pos(x0, y0, bh / 2), W.Pos(x1, y1, bh / 2), a) + toField * ((bt / 2 + 1) * S);
+                var pos = Vector3.Lerp(W.Pos(x0, y0, bh / 2), W.Pos(x1, y1, bh / 2), a) + toField * ((bt / 2 + 3) * S); // на 3 см впереди щита: иначе щит местами перекрывает текст
                 var tm = MakeText(pos, faceRot, 0.07f, Color.white);
                 boards.Add(new Board { Text = tm, Msg = Msgs[(i + boards.Count) % Msgs.Length], Phase = i * 0.7f });
             }
             if (scoreboard)
             {
-                var pos = W.Pos(cx, cy, bh / 2) + toField * ((bt / 2 + 1) * S);
-                var back = Shapes.Prim(PrimitiveType.Cube, root, pos - toField * (0.5f * S), Vector3.one, Mat.Solid(Mat.Hex("#02070a"), 0.8f), "ScoreScreen");
+                var screenPos = W.Pos(cx, cy, bh / 2) + toField * ((bt / 2 + 1) * S);
+                var pos = screenPos + toField * (2 * S); // текст счёта — на 2 см впереди экрана табло
+                var back = Shapes.Prim(PrimitiveType.Cube, root, screenPos - toField * (0.5f * S), Vector3.one, Mat.Solid(Mat.Hex("#02070a"), 0.8f), "ScoreScreen");
                 back.transform.rotation = Quaternion.LookRotation(along, Vector3.up);
                 back.transform.localScale = new Vector3(1 * S, (bh - 10) * S, 520 * S);
                 scoreText = MakeText(pos, faceRot, 0.085f, Color.white);
@@ -506,8 +507,21 @@ namespace Arena.Game
             var tm = go.AddComponent<TextMesh>();
             tm.font = font; tm.fontSize = 64; tm.characterSize = size; tm.anchor = TextAnchor.MiddleCenter; tm.alignment = TextAlignment.Center;
             tm.color = c; tm.fontStyle = FontStyle.Bold;
-            go.GetComponent<MeshRenderer>().sharedMaterial = font.material;
+            go.GetComponent<MeshRenderer>().sharedMaterial = TextMat();
             return tm;
+        }
+
+        // текст с проверкой глубины: герои закрывают надписи (встроенный материал шрифта рисует их поверх всего)
+        Material textMat;
+        Material TextMat()
+        {
+            if (textMat != null) return textMat;
+            var sh = Shader.Find("Arena/WorldText");
+            if (sh == null) return textMat = font.material; // шейдера нет — как раньше
+            textMat = new Material(sh) { name = "WorldText", renderQueue = 3000 };
+            textMat.mainTexture = font.material.mainTexture;
+            Font.textureRebuilt += f => { if (f == font && textMat != null) textMat.mainTexture = font.material.mainTexture; }; // атлас шрифта пересобрался
+            return textMat;
         }
 
         // ---------- каждый кадр ----------

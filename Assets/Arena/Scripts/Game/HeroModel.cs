@@ -22,6 +22,7 @@ namespace Arena.Game
         Celebrate, Sad, Defeated,        // after a goal and at the end of the match
         ShowIdle,                        // the lively stance on the hero select screen
         RunBall,                         // running with the ball (Run Forward)
+        RunBack, StrafeL, StrafeR,       // moving while facing elsewhere (keeper watching the ball): backwards, sideways
     }
 
     [Serializable]
@@ -46,6 +47,10 @@ namespace Arena.Game
         [Range(0.3f, 3)] public float passSpeed = 1.5f;
         [Tooltip("С мячом — бег Run Forward (главнее ведения)")] public bool runBall = true;
         [Tooltip("Скорость героя, при которой бег с мячом проигрывается с обычной скоростью")] [Range(80, 500)] public float runBallRef = 210;
+        [Tooltip("Бег спиной вперёд и приставным шагом, когда герой смотрит не туда, куда движется (вратарь следит за мячом)")] public bool strafe = true;
+        [Tooltip("Насколько направление движения должно отличаться от взгляда, чтобы включить бег спиной/вбок, градусы")] [Range(20, 80)] public float strafeAngle = 50;
+        [Tooltip("Скорость героя, при которой бег спиной проигрывается с обычной скоростью")] [Range(80, 500)] public float runBackRef = 220;
+        [Tooltip("Скорость героя, при которой приставной шаг проигрывается с обычной скоростью")] [Range(80, 500)] public float strafeRef = 240;
         [Tooltip("Если бег с мячом выключен: вести мяч анимацией ведения Dribble (выкл — обычный бег)")] public bool dribble = true;
         [Tooltip("Скорость героя, при которой ведение проигрывается с обычной скоростью")] [Range(80, 500)] public float dribbleRef = 190;
         [Tooltip("Сколько держать анимацию способности, прежде чем вернуться к бегу, с")] [Range(0.1f, 2)] public float abilityHold = 0.55f;
@@ -102,9 +107,9 @@ namespace Arena.Game
         static readonly string[] Folder = { "Jar", "Bagor", "Mig", "Vihr", "Ten", "Stena" };
         // one entry per HeroAnim; null = per hero (CelebrateFile)
         static readonly string[] ClipFile = { "idle", "run", "kick", "kick_strong", "dash", "stun", "run",
-            "pass", "dribble", "fall", "fall_back", "get_up", "throw", "ground_punch", "spell", "magic", null, "sad", "defeated", "idle_show", "run_ball" };
+            "pass", "dribble", "fall", "fall_back", "get_up", "throw", "ground_punch", "spell", "magic", null, "sad", "defeated", "idle_show", "run_ball", "run_back", "strafe_left", "strafe_right" };
         static readonly string[] ClipName = { "idle", "run", "kick", "kick_strong", "dash", "stun", "run_mirror",
-            "pass", "dribble", "fall", "fall_back", "get_up", "throw", "ground_punch", "spell", "magic", null, "sad", "defeated", "idle_show", "run_ball" };
+            "pass", "dribble", "fall", "fall_back", "get_up", "throw", "ground_punch", "spell", "magic", null, "sad", "defeated", "idle_show", "run_ball", "run_back", "strafe_left", "strafe_right" };
         // свой танец после гола у каждого героя: Жар, Багор, Миг, Вихрь, Тень, Стена
         static readonly string[] CelebrateFile = { "cel_victory", "cel_fist_pump", "cel_hip_hop", "cel_cheering", "cel_taunt", "cel_victory_idle" };
         const int RunMirror = (int)HeroAnim.RunMirror; // played together with Run, half a cycle apart: averages out any limp in the source clip
@@ -117,7 +122,7 @@ namespace Arena.Game
             switch (s)
             {
                 case HeroAnim.Pass: return HeroAnim.Kick;
-                case HeroAnim.Dribble: case HeroAnim.RunBall: return HeroAnim.Run;
+                case HeroAnim.Dribble: case HeroAnim.RunBall: case HeroAnim.RunBack: case HeroAnim.StrafeL: case HeroAnim.StrafeR: return HeroAnim.Run;
                 case HeroAnim.Fall: case HeroAnim.FallBack: case HeroAnim.GetUp: return HeroAnim.Stun;
                 case HeroAnim.Throw: case HeroAnim.GroundPunch: return HeroAnim.KickStrong;
                 default: return HeroAnim.Idle;

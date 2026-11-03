@@ -54,7 +54,7 @@ public class ArenaHeroImport : AssetPostprocessor
         if (!Ours || FileName == "tail" || FileName == "model") return;
         var mi = (ModelImporter)assetImporter;
         // looping clips: idles, run, dizzy stun, dribble and goal celebrations (cel_*)
-        bool loop = FileName == "idle" || FileName == "run" || FileName == "stun" || FileName == "dribble" || FileName == "run_ball" || FileName == "idle_show" || FileName.StartsWith("cel_");
+        bool loop = FileName == "idle" || FileName == "run" || FileName == "stun" || FileName == "dribble" || FileName == "run_ball" || FileName == "run_back" || FileName.StartsWith("strafe_") || FileName == "idle_show" || FileName.StartsWith("cel_");
         var clips = mi.defaultClipAnimations;
         foreach (var c in clips)
         {

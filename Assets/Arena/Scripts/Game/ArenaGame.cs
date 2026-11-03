@@ -47,8 +47,8 @@ namespace Arena.Game
         [Tooltip("Вспышки прожекторов: длительность, с")] [Range(0, 4)] public float goalFlashTime = 1.8f;
 
         [Header("Онлайн")]
-        [Tooltip("Сколько раз в секунду хост рассылает снимки матча")] [Range(20, 60)] public int snapRate = 60;
-        [Tooltip("Наименьший буфер сглаживания у друга, с (меньше — быстрее отклик, но при плохой связи рывки)")] [Range(0.01f, 0.15f)] public float minInterpDelay = 0.035f;
+        [Tooltip("Сколько раз в секунду хост рассылает снимки матча (свой сервер — 120 всегда)")] [Range(20, 120)] public int snapsPerSecond = 120;
+        [Tooltip("Наименьший буфер сглаживания у друга, с (меньше — быстрее отклик, но при плохой связи рывки). Сам буфер подстраивается под связь")] [Range(0.005f, 0.15f)] public float minBuffer = 0.015f;
         [Tooltip("Предсказание своего героя у друга: бег, разворот, рывок без задержки (выкл — как раньше, для сравнения)")] public bool predictOwnHero = true;
         [Tooltip("Друг: имитация плохой связи — добавочный пинг, мс (проверка предсказания на одном компьютере; 0 — выкл)")] [Range(0, 400)] public int simulatedPing = 0;
         [Tooltip("Хост: сколько шагов ввода друга держать в очереди (больше — ровнее при плохой связи, но задержка)")] [Range(1, 12)] public int inputQueue = 4;
@@ -101,6 +101,12 @@ namespace Arena.Game
         void Awake()
         {
             RuntimeLog.Start();
+            if (ArenaServer.IsServerMode)
+            {   // выделенный сервер: без камеры, графики, звука и меню — только матч и сеть (Net/ArenaServer.cs)
+                var srv = gameObject.AddComponent<ArenaServer>(); srv.tuning = tuning;
+                enabled = false;
+                return;
+            }
 #if UNITY_WEBGL && !UNITY_EDITOR
             Application.targetFrameRate = -1; // в браузере частоту задаёт сам браузер (обычно под монитор)
 #else
@@ -179,6 +185,8 @@ namespace Arena.Game
         int IMenuHost.DiffIndex { get => diffSel; set { diffSel = value; PlayerPrefs.SetInt("arena.diff", value); } }
         string IMenuHost.PlayerName { get => netName; set { netName = value ?? ""; PlayerPrefs.SetString("arena.name", netName); } }
         string IMenuHost.JoinCode { get => joinCode; set => joinCode = value ?? ""; }
+        string IMenuHost.ServerAddress { get => PlayerPrefs.GetString("arena.server", ""); set { PlayerPrefs.SetString("arena.server", value ?? ""); } }
+        void IMenuHost.JoinServer() => JoinServer();
         string IMenuHost.NetError => netError;
         Online IMenuHost.Net => net;
         Team IMenuHost.RoomTeam => netTeam;
@@ -189,7 +197,11 @@ namespace Arena.Game
         void IMenuHost.SetRoomHero(int i) { heroSel = i; PlayerPrefs.SetInt("arena.hero", i); net?.SetMine(HeroList[i], netTeam); }
         void IMenuHost.SetRoomTeam(Team t) { netTeam = t; net?.SetMine(HeroList[heroSel], t); }
         void IMenuHost.SetRoomRules(GameMode m, int d) => net?.SetMode(m, d);
-        void IMenuHost.StartRoomMatch() { if (IsHostOnline && net.State == Online.Phase.Lobby) StartOnlineMatch(); }
+        void IMenuHost.StartRoomMatch()
+        {
+            if (IsHostOnline && net.State == Online.Phase.Lobby) StartOnlineMatch();
+            else if (net != null && net.ViaServer && net.IsLeader) net.RequestStart(); // на своём сервере матч начинает сервер
+        }
         void IMenuHost.Quit()
         {
 #if UNITY_EDITOR
@@ -266,7 +278,7 @@ namespace Arena.Game
             view.Sync(match, Time.time, vdt, state == State.Playing ? lastCmd : default);
             toastT = Mathf.Max(0, toastT - dt);
             UpdateCamera(dt);
-            Online.SnapRate = snapRate; Online.MinDelay = minInterpDelay; Online.PredictOn = predictOwnHero; Online.MaxQueue = inputQueue; Online.SimLagMs = simulatedPing;
+            Online.SnapRate = snapsPerSecond; Online.MinDelay = minBuffer; Online.PredictOn = predictOwnHero; Online.MaxQueue = inputQueue; Online.SimLagMs = simulatedPing;
             sound.Master = masterVolume; sound.Sfx = sfxVolume; sound.Crowd = crowdVolume; sound.Music = musicVolume;
             sound.Sync(match, cam, dt, state == State.Playing || state == State.Paused || state == State.Ended || state == State.Replay, state == State.Replay);
         }
@@ -359,7 +371,12 @@ namespace Arena.Game
                     if (confirm || pause || back) EndReplay(); // пропустить повтор
                     break;
                 case State.Ended:
-                    if (net != null) { if (confirm && IsHostOnline) StartOnlineMatch(); else if (back) ExitOnline(); }
+                    if (net != null)
+                    {
+                        if (confirm && IsHostOnline) StartOnlineMatch();
+                        else if (confirm && net.ViaServer && net.IsLeader) net.RequestStart();
+                        else if (back) ExitOnline();
+                    }
                     else if (confirm) StartMatch();
                     else if (back) GoToMenu(MenuUI.Screen.Main);
                     break;
@@ -500,7 +517,8 @@ namespace Arena.Game
                 bool away = match.Local.Team == Team.Away; int mine = away ? match.ScoreAway : match.ScoreHome, theirs = away ? match.ScoreHome : match.ScoreAway;
                 string title = mine > theirs ? "Победа" : mine < theirs ? "Поражение" : "Ничья";
                 string hint = net == null ? "A / Enter — ещё матч     B / Backspace — в меню"
-                            : IsHostOnline ? "A / Enter — ещё матч (для всех)     B / Backspace — выйти из комнаты" : "Ждём, пока хост начнёт новый матч…     B / Backspace — выйти";
+                            : IsHostOnline || net.IsLeader ? "A / Enter — ещё матч (для всех)     B / Backspace — выйти из комнаты"
+                            : net.ViaServer ? "Ждём, пока главный начнёт новый матч…     B / Backspace — выйти" : "Ждём, пока хост начнёт новый матч…     B / Backspace — выйти";
                 Panel(w, h, title + "   " + mine + " : " + theirs, hint);
             }
         }
@@ -656,6 +674,15 @@ namespace Arena.Game
             state = State.Lobby; ui.Show(MenuUI.Screen.Room);
         }
 
+        void JoinServer()
+        {
+            PlayerPrefs.SetInt("arena.hero", heroSel);
+            netError = ""; netTeam = Team.Away;
+            net = new Online(); net.MatchStarted += OnNetStart;
+            net.JoinServer(PlayerPrefs.GetString("arena.server", ""), netName, HeroList[heroSel]);
+            state = State.Lobby; ui.Show(MenuUI.Screen.Room);
+        }
+
         void ExitOnline()
         {
             if (net != null)
@@ -714,7 +741,7 @@ namespace Arena.Game
         /// <summary>Строка в углу: у друга — свой пинг до хоста, у хоста — пинг каждого друга.</summary>
         string NetHudText()
         {
-            if (!net.IsHost) return PingText(net.MyPing) + (simulatedPing > 0 ? " + имитация " + simulatedPing + " мс" : "") + "   буфер " + Mathf.RoundToInt(net.InterpDelay * 1000) + " мс" + (predictOwnHero ? "   предсказание" : "");
+            if (!net.IsHost) return (net.ViaServer ? "сервер · " : "") + PingText(net.MyPing) + (simulatedPing > 0 ? " + имитация " + simulatedPing + " мс" : "") + "   буфер " + Mathf.RoundToInt(net.InterpDelay * 1000) + " мс" + (predictOwnHero ? "   предсказание" : "");
             var sb = new System.Text.StringBuilder();
             foreach (var st in net.Roster) if (st.Slot != 0) sb.Append(sb.Length > 0 ? " · " : "").Append(st.Name).Append(": ").Append(PingText(st.Ping));
             return (net.Direct ? "напрямую · " : "через Unity · ") + (sb.Length > 0 ? sb.ToString() : "друзей в комнате нет");

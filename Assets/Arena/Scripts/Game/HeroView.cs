@@ -222,7 +222,19 @@ namespace Arena.Game
             else if (animLock > 0) { }
             else if (speed > 30)
             {
-                if (T.runBall && ball.Owner == p && model.Has(HeroAnim.RunBall))
+                // смотрит не туда, куда бежит (вратарь следит за мячом и пятится/смещается вбок)
+                float fwd = (p.Vx * p.Fx + p.Vy * p.Fy) / speed;
+                Vector3 wf = W.Dir(p.Fx, p.Fy), wv = W.Dir(p.Vx, p.Vy);
+                float side = (wv.x * wf.z - wv.z * wf.x) / speed;      // > 0 — движется вправо от взгляда
+                float cosA = Mathf.Cos(T.strafeAngle * Mathf.Deg2Rad);
+                bool own = ball.Owner == p;
+                if (T.strafe && !own && fwd < -cosA && model.Has(HeroAnim.RunBack))
+                    model.Play(HeroAnim.RunBack, T.fade, false, Mathf.Clamp(speed / T.runBackRef, 0.6f, 1.8f));
+                else if (T.strafe && !own && fwd < cosA && side > 0 && model.Has(HeroAnim.StrafeR))
+                    model.Play(HeroAnim.StrafeR, T.fade, false, Mathf.Clamp(speed / T.strafeRef, 0.6f, 1.8f));
+                else if (T.strafe && !own && fwd < cosA && side < 0 && model.Has(HeroAnim.StrafeL))
+                    model.Play(HeroAnim.StrafeL, T.fade, false, Mathf.Clamp(speed / T.strafeRef, 0.6f, 1.8f));
+                else if (T.runBall && own && model.Has(HeroAnim.RunBall))
                     model.Play(HeroAnim.RunBall, T.fade, false, Mathf.Clamp(speed / T.runBallRef, 0.6f, 1.8f));
                 else if (T.dribble && ball.Owner == p && model.Has(HeroAnim.Dribble))
                     model.Play(HeroAnim.Dribble, T.fade, false, Mathf.Clamp(speed / T.dribbleRef, 0.6f, 2.2f));

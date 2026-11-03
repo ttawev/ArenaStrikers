@@ -71,6 +71,9 @@ namespace Arena.Game
         // друг подключается к хосту по его IP. Для игры через интернет — общая виртуальная сеть (Radmin VPN, Tailscale, Hamachi)
         // или одна домашняя сеть. Пинг по городу ~5–30 мс вместо ~200 через Европу.
         public const ushort DirectPort = 7777;
+        /// <summary>Версия сетевой игры. УВЕЛИЧИВАТЬ при любом изменении сети (сообщения, снимок) или правил матча —
+        /// игроки и сервер с разными версиями не соединятся (друг увидит «обнови игру»).</summary>
+        public const int NetVersion = 2;
         public bool Direct { get; private set; }
         public string DirectIp { get; private set; } = "";
 
@@ -177,11 +180,127 @@ namespace Arena.Game
             }
         }
 
+        // ---------- свой выделенный сервер (VPS) ----------
+        // Сервер — та же игра с ключом -server, без графики и своего игрока (ArenaServer). Подключение — по адресу,
+        // без сервисов Unity. Место 0 у сервера пустует, игроки занимают 1..7. Первый вошедший — «главный»:
+        // выбирает формат и сложность и начинает матч (сообщения rules / go).
+        public bool Server { get; private set; }   // это выделенный сервер
+        public bool ViaServer { get; private set; } // мы — игрок на выделенном сервере
+        public bool StartRequested;                 // сервер: главный нажал «Начать»
+        float connectT;
+
+        /// <summary>Главный в комнате на выделенном сервере — тот, кто вошёл раньше всех (наименьшее место).</summary>
+        public bool IsLeader
+        {
+            get
+            {
+                if (!ViaServer || Roster.Count == 0) return false;
+                int min = 99; foreach (var x in Roster) min = Math.Min(min, x.Slot);
+                return min == MySlot;
+            }
+        }
+
+        /// <summary>Сервер: слушать порт (все сетевые адреса машины).</summary>
+        public void HostServer(ushort port)
+        {
+            IsHost = true; Server = true; myName = "сервер"; MySlot = 0;
+            try
+            {
+                EnsureNetworkManager();
+                var ut = OwnTransport();
+                ut.SetConnectionData("0.0.0.0", port, "0.0.0.0");
+                if (!nm.StartServer()) { Fail("Сервер не смог открыть порт " + port); return; }
+                Code = "порт " + port;
+                Listen();
+                Roster.Clear();
+                State = Phase.Lobby; Status = "";
+                Debug.Log("[Arena] сервер слушает порт " + port);
+            }
+            catch (Exception e) { Fail("Не удалось запустить сервер: " + e.Message); }
+        }
+
+        /// <summary>Игрок: подключиться к выделенному серверу по адресу «IP» или «IP:порт» (можно имя сайта).</summary>
+        public void JoinServer(string address, string name, Hero hero)
+        {
+            IsHost = false; ViaServer = true; myName = name; myHero = hero; myTeam = Team.Away;
+            try
+            {
+                string a = (address ?? "").Trim(); ushort port = DirectPort;
+                int c = a.LastIndexOf(':');
+                if (c > 0 && ushort.TryParse(a.Substring(c + 1), out var pp)) { port = pp; a = a.Substring(0, c); }
+                if (a == "") { Fail("Не указан адрес сервера"); return; }
+                string ip = a;
+#if !(UNITY_WEBGL && !UNITY_EDITOR)
+                if (!System.Net.IPAddress.TryParse(a, out _))
+                {   // имя сайта → IPv4
+                    foreach (var x in System.Net.Dns.GetHostAddresses(a))
+                        if (x.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork) { ip = x.ToString(); break; }
+                }
+#endif
+                Code = a + (port != DirectPort ? ":" + port : "");
+                Status = "Подключаюсь к серверу " + Code + "…";
+                EnsureNetworkManager();
+                var ut = OwnTransport();
+                ut.SetConnectionData(ip, port);
+                Debug.LogWarning("[Arena] подключаюсь к серверу " + ip + ":" + port + " (UDP), транспорт: " + ut.Protocol);
+                nm.OnClientConnectedCallback += OnServerConnected;
+                if (!nm.StartClient()) { Fail("Не удалось начать подключение"); return; }
+                Listen();
+                connectT = 8;
+            }
+            catch (Exception e) { Fail("Не удалось подключиться к серверу: " + e.Message); }
+        }
+
+        /// <summary>Свой транспорт для прямого подключения. Комната «через Unity» подменяет транспорт NetworkManager на свой
+        /// (Relay) и после выхода не всегда возвращает — тогда подключение к серверу ушло бы не туда.</summary>
+        UnityTransport OwnTransport()
+        {
+            if (nm.IsListening) nm.Shutdown();
+            var ut = nm.GetComponent<UnityTransport>();
+            if (ut == null) ut = nm.gameObject.AddComponent<UnityTransport>();
+            nm.NetworkConfig.NetworkTransport = ut;
+            return ut;
+        }
+
+        void OnServerConnected(ulong id)
+        {
+            if (nm == null || id != nm.LocalClientId) return;
+            nm.OnClientConnectedCallback -= OnServerConnected;
+            connectT = 0; State = Phase.Lobby; Status = "";
+            SendHello();
+        }
+
+        /// <summary>Игрок на сервере (главный): попросить начать матч.</summary>
+        public void RequestStart()
+        {
+            if (!ViaServer || nm == null || !nm.IsConnectedClient) return;
+            using var w = new FastBufferWriter(8, Allocator.Temp);
+            w.WriteValueSafe((byte)1);
+            nm.CustomMessagingManager.SendNamedMessage("go", NetworkManager.ServerClientId, w, NetworkDelivery.ReliableSequenced);
+        }
+
+        bool FromLeader(ulong from)
+        {
+            int min = 99; foreach (var x in Roster) min = Math.Min(min, x.Slot);
+            var s = Roster.Find(x => x.ClientId == from);
+            return s != null && s.Slot == min;
+        }
+
+        void OnRules(ulong from, FastBufferReader r)
+        {
+            r.ReadValueSafe(out byte mode); r.ReadValueSafe(out byte diff);
+            if (!FromLeader(from)) return;
+            Mode = (GameMode)mode; Difficulty = Math.Max(0, Math.Min(2, (int)diff)); SendRoster();
+        }
+
+        void OnGo(ulong from, FastBufferReader r) { if (FromLeader(from)) StartRequested = true; }
+
         public async void Leave()
         {
             Unlisten();
             var s = session; session = null;
             try { if (s != null) await s.LeaveAsync(); } catch (Exception e) { Debug.LogWarning("[Arena] выход из комнаты: " + e.Message); }
+            if (nm != null) nm.OnClientConnectedCallback -= OnServerConnected;
             try { if (nm != null && nm.IsListening) nm.Shutdown(); } catch { }
         }
 
@@ -197,11 +316,14 @@ namespace Arena.Game
         void Listen()
         {
             var cm = nm.CustomMessagingManager;
-            if (IsHost) { cm.RegisterNamedMessageHandler("hello", OnHello); cm.RegisterNamedMessageHandler("in", OnInput); }
+            if (IsHost)
+            {
+                cm.RegisterNamedMessageHandler("hello", OnHello); cm.RegisterNamedMessageHandler("in", OnInput);
+                if (Server) { cm.RegisterNamedMessageHandler("rules", OnRules); cm.RegisterNamedMessageHandler("go", OnGo); }
+            }
             else { cm.RegisterNamedMessageHandler("roster", OnRoster); cm.RegisterNamedMessageHandler("start", OnStart); cm.RegisterNamedMessageHandler("snap", OnSnap); }
             nm.OnClientDisconnectCallback += OnDisconnect;
-            session.RemovedFromSession += OnRemoved;
-            session.Deleted += OnRemoved;
+            if (session != null) { session.RemovedFromSession += OnRemoved; session.Deleted += OnRemoved; }
             listening = true;
         }
 
@@ -214,7 +336,7 @@ namespace Arena.Game
                 {
                     nm.OnClientDisconnectCallback -= OnDisconnect;
                     var cm = nm.CustomMessagingManager;
-                    if (cm != null) foreach (var n in new[] { "hello", "in", "roster", "start", "snap" }) cm.UnregisterNamedMessageHandler(n);
+                    if (cm != null) foreach (var n in new[] { "hello", "in", "roster", "start", "snap", "rules", "go" }) cm.UnregisterNamedMessageHandler(n);
                 }
                 if (session != null) { session.RemovedFromSession -= OnRemoved; session.Deleted -= OnRemoved; }
             }
@@ -225,10 +347,19 @@ namespace Arena.Game
 
         void OnDisconnect(ulong id)
         {
-            if (!IsHost) { if (State != Phase.Failed) Fail("Связь с хостом потеряна"); return; }
+            if (!IsHost)
+            {
+                if (State == Phase.Failed) return;
+                string reason = nm != null ? nm.DisconnectReason : null;
+                if (!string.IsNullOrEmpty(reason)) Fail(reason); // например, «версия игры не совпадает»
+                else if (ViaServer && connectT > 0) Fail("Сервер не отвечает — проверь адрес и что сервер запущен");
+                else Fail(ViaServer ? "Связь с сервером потеряна" : "Связь с хостом потеряна");
+                return;
+            }
             int i = Roster.FindIndex(s => s.ClientId == id);
             if (i < 0) return;
             LeftSlots.Enqueue(Roster[i].Slot);
+            ResetSlotInput(Roster[i].Slot);
             Roster.RemoveAt(i);
             SendRoster();
         }
@@ -242,18 +373,35 @@ namespace Arena.Game
             else SendHello();
         }
 
-        public void SetMode(GameMode mode, int difficulty) { Mode = mode; Difficulty = difficulty; SendRoster(); }
+        public void SetMode(GameMode mode, int difficulty)
+        {
+            Mode = mode; Difficulty = difficulty;
+            if (IsHost) { SendRoster(); return; }
+            if (!ViaServer || nm == null || !nm.IsConnectedClient) return; // игрок на сервере (главный) — просит сервер
+            using var w = new FastBufferWriter(8, Allocator.Temp);
+            w.WriteValueSafe((byte)mode); w.WriteValueSafe((byte)difficulty);
+            nm.CustomMessagingManager.SendNamedMessage("rules", NetworkManager.ServerClientId, w, NetworkDelivery.ReliableSequenced);
+        }
 
         void SendHello()
         {
             using var w = new FastBufferWriter(128, Allocator.Temp, 1024);
             w.WriteValueSafe(myName ?? ""); w.WriteValueSafe((byte)myHero); w.WriteValueSafe((byte)myTeam);
+            w.WriteValueSafe(NetVersion);
             nm.CustomMessagingManager.SendNamedMessage("hello", NetworkManager.ServerClientId, w, NetworkDelivery.ReliableSequenced);
         }
 
         void OnHello(ulong from, FastBufferReader r)
         {
             r.ReadValueSafe(out string name); r.ReadValueSafe(out byte hero); r.ReadValueSafe(out byte team);
+            int ver = 0; try { r.ReadValueSafe(out ver); } catch { } // старые сборки версию не присылают
+            if (ver != NetVersion)
+            {
+                string why = "Версия игры не совпадает: у тебя " + (ver == 0 ? "старая" : ver.ToString()) + ", " + (Server ? "на сервере" : "у хоста") + " " + NetVersion + ". Обнови игру.";
+                Debug.LogWarning("[Arena] отклонён игрок «" + name + "»: версия " + ver + ", нужна " + NetVersion);
+                try { nm.DisconnectClient(from, why); } catch { }
+                return;
+            }
             var s = Roster.Find(x => x.ClientId == from);
             if (s == null)
             {
@@ -261,6 +409,7 @@ namespace Arena.Game
                 if (slot > 7) return;
                 s = new LobbySeat { ClientId = from, Slot = slot };
                 Roster.Add(s);
+                ResetSlotInput(slot);
             }
             s.Name = string.IsNullOrWhiteSpace(name) ? "Игрок " + s.Slot : name; s.Hero = (Hero)hero; s.Team = (Team)team;
             SendRoster();
@@ -309,7 +458,7 @@ namespace Arena.Game
             foreach (var p in m.Players) { w.WriteValueSafe((byte)p.Team); w.WriteValueSafe((byte)p.Hero); w.WriteValueSafe((sbyte)p.HumanSlot); }
             nm.CustomMessagingManager.SendNamedMessage("start", to, w, NetworkDelivery.ReliableSequenced);
             hookIds.Clear(); wallIds.Clear(); outEvents.Clear(); sendT = 0;
-            for (int i = 0; i < 8; i++) { inQ[i].Clear(); heldCmd[i] = default; pendDash[i] = pendAbil[i] = pendBall[i] = false; }
+            for (int i = 0; i < 8; i++) ResetSlotInput(i);
         }
 
         void OnStart(ulong from, FastBufferReader r)
@@ -335,7 +484,7 @@ namespace Arena.Game
         struct TickIn { public uint Seq; public InputCommand C; }
         public static bool PredictOn = true;
         /// <summary>Как часто хост рассылает снимки, раз в секунду.</summary>
-        public static int SnapRate = 60;
+        public static int SnapRate = 120;
         /// <summary>Хост держит очередь ввода друга не длиннее этого (лишнее догоняется — иначе растёт задержка).</summary>
         public static int MaxQueue = 4;
 
@@ -438,6 +587,15 @@ namespace Arena.Game
             }
         }
 
+        /// <summary>Хост: новый игрок на месте, выход или новый матч — забыть номера шагов прошлого игрока
+        /// (иначе шаги нового, которые снова нумеруются с 1, отбрасываются как «уже выполненные» — герой стоит на месте).</summary>
+        void ResetSlotInput(int slot)
+        {
+            if (slot < 0 || slot > 7) return;
+            inQ[slot].Clear(); queued[slot] = 0; acked[slot] = 0; heldCmd[slot] = default;
+            pendDash[slot] = pendAbil[slot] = pendBall[slot] = false;
+        }
+
         /// <summary>Хост: команда для места на один шаг симуляции — следующий шаг ввода друга по порядку.</summary>
         public InputCommand TakeInput(int slot)
         {
@@ -483,8 +641,11 @@ namespace Arena.Game
         float timeOffset = float.NaN; // время хоста минус своё
         float lastArrive, jitter = 0.02f;
         /// <summary>Буфер сглаживания у друга, с: полтора интервала снимков плюс запас на неровность связи.</summary>
-        public float InterpDelay => Mathf.Clamp(1.5f / Mathf.Max(10, SnapRate) + 2.5f * jitter, MinDelay, 0.15f);
-        public static float MinDelay = 0.035f;
+        /// <summary>Буфер сглаживания у друга, с: полтора РЕАЛЬНЫХ интервала между снимками (как часто их шлёт хост/сервер)
+        /// плюс запас на неровность связи. Интервал меряется по факту — настройка частоты у друга не важна.</summary>
+        public float InterpDelay => Mathf.Clamp(1.5f * snapGap + 2.5f * jitter, MinDelay, 0.15f);
+        public static float MinDelay = 0.015f;
+        float snapGap = 1f / 60;
         float lastEventT = -1;
 
         // ---------- имитация плохой связи (для проверки на одном компьютере) ----------
@@ -521,12 +682,14 @@ namespace Arena.Game
             try { s = NetSnapshot.Read(r); } catch (Exception e) { Debug.LogWarning("[Arena] плохой снимок: " + e.Message); return; }
             if (Snaps.Count > 0 && s.T <= Snaps[Snaps.Count - 1].T) return; // старый
             Snaps.Add(s);
-            if (Snaps.Count > 60) Snaps.RemoveAt(0);
+            if (Snaps.Count > 120) Snaps.RemoveAt(0);
             // насколько неровно приходят снимки: от этого зависит, сколько держать про запас (буфер сглаживания)
             float now = Time.unscaledTime;
             if (lastArrive > 0)
             {
-                float gap = now - lastArrive, dev = Mathf.Abs(gap - 1f / SnapRate);
+                float gap = now - lastArrive;
+                if (gap > 0.001f && gap < 0.2f) snapGap = Mathf.Lerp(snapGap, gap, 0.05f); // средний интервал между снимками
+                float dev = Mathf.Abs(gap - snapGap);
                 jitter = dev > jitter ? Mathf.Lerp(jitter, dev, 0.25f) : Mathf.Lerp(jitter, dev, 0.02f);
             }
             lastArrive = now;
@@ -568,6 +731,7 @@ namespace Arena.Game
         /// <summary>Хост: раз в секунду мерит пинг каждого друга и рассылает состав с пингами.</summary>
         public void Tick(float dt)
         {
+            if (connectT > 0 && State == Phase.Connecting) { connectT -= dt; if (connectT <= 0) Fail("Сервер не отвечает — проверь адрес и что сервер запущен"); }
             if (!IsHost || State == Phase.Connecting || State == Phase.Failed) return;
             pingT -= dt; if (pingT > 0) return; pingT = 1;
             foreach (var s in Roster) s.Ping = s.Slot == 0 ? 0 : Rtt(s.ClientId);
