@@ -28,6 +28,7 @@ namespace Arena.Game
         public int MySlot;
         public GameMode Mode = GameMode.TwoVsTwo;
         public int Difficulty = 1;
+        public int MatchTime = 180, WinGoals = 5; // правила матча: длительность, с; голов до победы (0 — без лимита)
         public readonly List<LobbySeat> Roster = new List<LobbySeat>();
 
         /// <summary>Друг: пришёл состав матча (режим, сложность, места).</summary>
@@ -73,7 +74,8 @@ namespace Arena.Game
         public const ushort DirectPort = 7777;
         /// <summary>Версия сетевой игры. УВЕЛИЧИВАТЬ при любом изменении сети (сообщения, снимок) или правил матча —
         /// игроки и сервер с разными версиями не соединятся (друг увидит «обнови игру»).</summary>
-        public const int NetVersion = 4; // 3: «Найти матч» — комнаты на сервере (ServerHub); 4: «дай пас», золотой гол, выход команд, MVP
+        public const int NetVersion = 5; // 5: правила матча (время, голы) и 3 на 3
+        // история версий сети: 3: «Найти матч» — комнаты на сервере (ServerHub); 4: «дай пас», золотой гол, выход команд, MVP
         public bool Direct { get; private set; }
         public string DirectIp { get; private set; } = "";
 
@@ -297,9 +299,9 @@ namespace Arena.Game
 
         void OnRules(ulong from, FastBufferReader r)
         {
-            r.ReadValueSafe(out byte mode); r.ReadValueSafe(out byte diff);
+            r.ReadValueSafe(out byte mode); r.ReadValueSafe(out byte diff); r.ReadValueSafe(out ushort time); r.ReadValueSafe(out byte goals);
             if (!FromLeader(from)) return;
-            Mode = (GameMode)mode; Difficulty = Math.Max(0, Math.Min(2, (int)diff)); SendRoster();
+            Mode = (GameMode)mode; Difficulty = Math.Max(0, Math.Min(2, (int)diff)); MatchTime = Mathf.Clamp(time, 30, 1200); WinGoals = goals; SendRoster();
         }
 
         void OnGo(ulong from, FastBufferReader r) { if (FromLeader(from)) StartRequested = true; }
@@ -375,20 +377,24 @@ namespace Arena.Game
 
         // ---------- комната ----------
         /// <summary>Свой герой/команда изменились.</summary>
+        float mineT = -10;
         public void SetMine(Hero hero, Team team)
         {
-            myHero = hero; myTeam = team;
+            myHero = hero; myTeam = team; mineT = Time.unscaledTime;
             if (IsHost) { var me = Roster.Find(s => s.Slot == 0); if (me != null) { me.Hero = hero; me.Team = team; } SendRoster(); }
             else SendHello();
         }
 
-        public void SetMode(GameMode mode, int difficulty)
+        public void SetMode(GameMode mode, int difficulty) => SetRules(mode, difficulty, MatchTime, WinGoals);
+
+        /// <summary>Хост или главный на сервере: формат, боты, длительность и голы до победы.</summary>
+        public void SetRules(GameMode mode, int difficulty, int time, int goals)
         {
-            Mode = mode; Difficulty = difficulty;
+            Mode = mode; Difficulty = difficulty; MatchTime = time; WinGoals = goals;
             if (IsHost) { SendRoster(); return; }
             if (!ViaServer || nm == null || !nm.IsConnectedClient) return; // игрок на сервере (главный) — просит сервер
-            using var w = new FastBufferWriter(8, Allocator.Temp);
-            w.WriteValueSafe((byte)mode); w.WriteValueSafe((byte)difficulty);
+            using var w = new FastBufferWriter(16, Allocator.Temp);
+            w.WriteValueSafe((byte)mode); w.WriteValueSafe((byte)difficulty); w.WriteValueSafe((ushort)time); w.WriteValueSafe((byte)goals);
             nm.CustomMessagingManager.SendNamedMessage("rules", NetworkManager.ServerClientId, w, NetworkDelivery.ReliableSequenced);
         }
 
@@ -437,15 +443,15 @@ namespace Arena.Game
             if (!IsHost || nm == null || !nm.IsListening) return;
             var to = Others(); if (to.Count == 0) return;
             using var w = new FastBufferWriter(256, Allocator.Temp, 4096);
-            w.WriteValueSafe((byte)Mode); w.WriteValueSafe((byte)Difficulty); w.WriteValueSafe((byte)Roster.Count);
+            w.WriteValueSafe((byte)Mode); w.WriteValueSafe((byte)Difficulty); w.WriteValueSafe((ushort)MatchTime); w.WriteValueSafe((byte)WinGoals); w.WriteValueSafe((byte)Roster.Count);
             foreach (var s in Roster) { w.WriteValueSafe(s.ClientId); w.WriteValueSafe((byte)s.Slot); w.WriteValueSafe(s.Name ?? ""); w.WriteValueSafe((byte)s.Hero); w.WriteValueSafe((byte)s.Team); w.WriteValueSafe((short)s.Ping); }
             nm.CustomMessagingManager.SendNamedMessage("roster", to, w, NetworkDelivery.ReliableSequenced);
         }
 
         void OnRoster(ulong from, FastBufferReader r)
         {
-            r.ReadValueSafe(out byte mode); r.ReadValueSafe(out byte diff); r.ReadValueSafe(out byte n);
-            Mode = (GameMode)mode; Difficulty = diff;
+            r.ReadValueSafe(out byte mode); r.ReadValueSafe(out byte diff); r.ReadValueSafe(out ushort time); r.ReadValueSafe(out byte goals); r.ReadValueSafe(out byte n);
+            Mode = (GameMode)mode; Difficulty = diff; MatchTime = time; WinGoals = goals;
             Roster.Clear();
             for (int i = 0; i < n; i++)
             {
@@ -465,7 +471,8 @@ namespace Arena.Game
             catch { }
             // герой и команду назначает сервер (команда — где меньше людей, герой — не повторяется в команде)
             var me = Roster.Find(x => x.ClientId == nm.LocalClientId);
-            if (me != null) { myHero = me.Hero; myTeam = me.Team; }
+            // только что сменил героя или команду — не откатывать: этот состав мог уйти с сервера раньше, чем он получил выбор
+            if (me != null && Time.unscaledTime - mineT > 2f) { myHero = me.Hero; myTeam = me.Team; }
         }
 
         // ---------- начало матча ----------
@@ -474,7 +481,7 @@ namespace Arena.Game
             State = Phase.InGame;
             var to = Others(); if (to.Count == 0) return;
             using var w = new FastBufferWriter(128, Allocator.Temp, 4096);
-            w.WriteValueSafe((byte)m.Mode); w.WriteValueSafe((byte)m.Difficulty); w.WriteValueSafe((byte)m.Players.Count);
+            w.WriteValueSafe((byte)m.Mode); w.WriteValueSafe((byte)m.Difficulty); w.WriteValueSafe((ushort)m.Duration); w.WriteValueSafe((byte)m.WinGoals); w.WriteValueSafe((byte)m.Players.Count);
             foreach (var p in m.Players) { w.WriteValueSafe((byte)p.Team); w.WriteValueSafe((byte)p.Hero); w.WriteValueSafe((sbyte)p.HumanSlot); }
             nm.CustomMessagingManager.SendNamedMessage("start", to, w, NetworkDelivery.ReliableSequenced);
             hookIds.Clear(); wallIds.Clear(); outEvents.Clear(); sendT = 0;
@@ -483,7 +490,8 @@ namespace Arena.Game
 
         void OnStart(ulong from, FastBufferReader r)
         {
-            r.ReadValueSafe(out byte mode); r.ReadValueSafe(out byte diff); r.ReadValueSafe(out byte n);
+            r.ReadValueSafe(out byte mode); r.ReadValueSafe(out byte diff); r.ReadValueSafe(out ushort time); r.ReadValueSafe(out byte goals); r.ReadValueSafe(out byte n);
+            MatchTime = time; WinGoals = goals;
             pred = null; reconciled = null; errOff = Vector2.zero; hist.Clear(); // новый матч — предсказание с нуля
             var seats = new List<Match.Seat>();
             for (int i = 0; i < n; i++)

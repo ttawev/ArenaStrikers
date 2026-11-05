@@ -13,6 +13,7 @@ namespace Arena.Game
         readonly GameObject[] hats = new GameObject[6];
         Renderer[] rends; Material[] origMats; Material ghostMat; bool ghosted; float ghostAlpha = -1;
         readonly GameObject arcObj, fireRing, rope, hookHead, tpMark, youMark;
+        readonly GameObject ownRing, ownWave; readonly Material ownRingMat, ownWaveMat; float ownT; // подсветка владельца мяча
         readonly GameObject callMark, callWave; readonly Material callWaveMat; float callPop, mvpTurn; // «дай пас» и поворот MVP к камере
         readonly Mesh arcMesh;
         float arcShown = -1;
@@ -119,6 +120,15 @@ namespace Arena.Game
             callWave = Shapes.MeshObj(Shapes.Ring((Field.R + 2) * S, (Field.R + 9) * S), Root.transform, callWaveMat, "callWave");
             callWave.transform.localPosition = V(0, 1.8f, 0);
             callMark.SetActive(false); callWave.SetActive(false);
+            // у кого мяч: яркое кольцо под ногами в цвет команды и расходящаяся волна
+            Color oc = Color.Lerp(teamCol, Color.white, 0.35f);
+            ownRingMat = Mat.Clear(new Color(oc.r * 2.2f, oc.g * 2.2f, oc.b * 2.2f, 0.95f), true);
+            ownRing = Shapes.MeshObj(Shapes.Ring((Field.R + 7) * S, (Field.R + 15) * S), Root.transform, ownRingMat, "ownRing");
+            ownRing.transform.localPosition = V(0, 1.2f, 0);
+            ownWaveMat = Mat.Clear(new Color(oc.r, oc.g, oc.b, 0.6f), true);
+            ownWave = Shapes.MeshObj(Shapes.Ring((Field.R + 13) * S, (Field.R + 17) * S), Root.transform, ownWaveMat, "ownWave");
+            ownWave.transform.localPosition = V(0, 1.0f, 0);
+            ownRing.SetActive(false); ownWave.SetActive(false);
             rope.SetActive(false); hookHead.SetActive(false); tpMark.SetActive(false); youMark.SetActive(false);
         }
 
@@ -174,8 +184,8 @@ namespace Arena.Game
                     react = (p.Team == Team.Home) == (m.ScoreHome > m.ScoreAway) ? HeroAnim.Celebrate : HeroAnim.Defeated;
                 if (m.Mode != GameMode.Training && m.Mvp() == p) react = HeroAnim.Celebrate; // лучший игрок матча празднует, даже если проиграл
             }
-            else if (m.Intro > 0 && m.IntroStage == 1 && m.IntroStageTime > 0.25f)
-                react = HeroAnim.Celebrate; // выход команд: стоят в линию — каждый в своей позе
+            else if (m.Intro > 0 && m.IntroStage == 1)
+                react = model.Has(HeroAnim.ShowIdle) ? HeroAnim.ShowIdle : HeroAnim.Idle; // выход команд: стоят в строю собранно, без празднований
             else if (m.Freeze > 0 && m.Banner != "" && m.Mode != GameMode.Training && !p.Dummy)
                 react = p.Team == m.BannerTeam ? HeroAnim.Celebrate : HeroAnim.Sad;
             if (react != null)
@@ -268,6 +278,12 @@ namespace Arena.Game
             prevStun = p.Stun; prevHookCd = p.HookCd; prevWallCd = p.WallCd; prevTpCd = p.TpCd; prevInvisT = p.InvisT;
         }
 
+        /// <summary>Убрать героя со сцены вместе с верёвкой, крюком и меткой телепорта (они лежат не внутри героя).</summary>
+        public void Destroy()
+        {
+            Object.Destroy(Root); Object.Destroy(rope); Object.Destroy(hookHead); Object.Destroy(tpMark);
+        }
+
         public void SetVisible(bool on)
         {
             Root.SetActive(on);
@@ -348,6 +364,20 @@ namespace Arena.Game
 
             youMark.SetActive(showYouMark);
             if (showYouMark) { youMark.transform.localPosition = V(0, 150 + Mathf.Sin(t * 5) * 4, 0); }
+
+            // подсветка владельца мяча (невидимую Тень соперникам не выдаём)
+            bool own = m.Ball.Owner == p && m.Phase == MatchPhase.Playing && (!p.Invisible || (m.Local != null && p.Team == m.Local.Team));
+            ownRing.SetActive(own); ownWave.SetActive(own);
+            if (own)
+            {
+                ownT = Mathf.Min(1, ownT + Time.unscaledDeltaTime * 5);
+                float pop = 1 + 0.35f * (1 - ownT) + 0.06f * Mathf.Sin(t * 8);
+                ownRing.transform.localScale = new Vector3(pop, 1, pop);
+                float wv = (t * 1.3f) % 1f;
+                ownWave.transform.localScale = new Vector3(1 + wv * 1.2f, 1, 1 + wv * 1.2f);
+                var wc = ownWaveMat.GetColor("_BaseColor"); wc.a = 0.6f * (1 - wv); ownWaveMat.SetColor("_BaseColor", wc);
+            }
+            else ownT = 0;
 
             // «дай пас»: метку видят свои (соперникам незачем знать, кому сейчас отдадут)
             bool call = p.CallT > 0 && m.Local != null && p.Team == m.Local.Team && m.Phase == MatchPhase.Playing;

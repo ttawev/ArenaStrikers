@@ -21,6 +21,15 @@ namespace Arena.Sim
         public int Difficulty { get; private set; } = 1;
         public int ScoreHome, ScoreAway;
         public float Clock = MATCH_TIME;
+        /// <summary>Правила матча (выбираются перед матчем): длительность, с, и голов до победы (0 — без лимита, только по времени).</summary>
+        public float Duration = MATCH_TIME; public int WinGoals = (int)WIN_GOALS;
+        public static readonly int[] TimeOptions = { 60, 120, 180, 240, 300, 420, 600 };
+        public static readonly int[] GoalOptions = { 3, 5, 7, 10, 0 };
+        public static string TimeName(float sec) => Math.Round(sec / 60f) + " мин";
+        public static string GoalsName(int g) => g <= 0 ? "без лимита" : "до " + g;
+        public static string ModeName(GameMode m) => m == GameMode.OneVsOne ? "1 на 1" : m == GameMode.TwoVsTwo ? "2 на 2" : m == GameMode.ThreeVsThree ? "3 на 3" : m == GameMode.FourVsFour ? "4 на 4" : "Тренировка";
+        /// <summary>Формат, в который влезают need игроков в одной команде.</summary>
+        public static GameMode ModeFor(int need) => need <= 1 ? GameMode.OneVsOne : need == 2 ? GameMode.TwoVsTwo : need == 3 ? GameMode.ThreeVsThree : GameMode.FourVsFour;
         public float Freeze;
         public string Banner = "";      // "ГОЛ!", "ПРОПУСТИЛ", "АВТОГОЛ" while frozen after a goal
         public Team BannerTeam;
@@ -77,6 +86,10 @@ namespace Arena.Sim
                     Add(Team.Away, opp[0]); break;
                 case GameMode.TwoVsTwo:
                     Add(Team.Home, mine[0]); Add(Team.Away, opp[0]); Add(Team.Away, opp[1]); break;
+                case GameMode.ThreeVsThree:
+                    Add(Team.Home, mine[0]); Add(Team.Home, mine[1]);
+                    for (int i = 0; i < 3; i++) Add(Team.Away, opp[i]);
+                    break;
                 default:
                     Add(Team.Home, mine[0]); Add(Team.Home, mine[1]); Add(Team.Home, mine[2]);
                     for (int i = 0; i < 4; i++) Add(Team.Away, opp[i]);
@@ -87,7 +100,7 @@ namespace Arena.Sim
 
         public void NewMatch()
         {
-            ScoreHome = ScoreAway = 0; Clock = MATCH_TIME; Phase = MatchPhase.Playing; Banner = "";
+            ScoreHome = ScoreAway = 0; Clock = Math.Max(10, Duration); Phase = MatchPhase.Playing; Banner = "";
             Golden = false; GoldenT = 0; Intro = 0;
             foreach (var p in Players) p.ResetStats();
             Kickoff();
@@ -117,6 +130,7 @@ namespace Arena.Sim
                 p.IntroOrder = p.Team == Team.Home ? nh++ : na++;
                 p.X = TunnelX; p.Y = FH / 2 + (p.Team == Team.Home ? 30 : -30); p.Vx = p.Vy = 0; p.Fx = 1; p.Fy = 0;
             }
+            Ball.X = FW * 0.3f; Ball.Y = FH / 2; // мяч — за строем, чтобы не лез в кадр; разводка вернёт его в центр
         }
 
         /// <summary>Офлайн: пропустить выход команд (A / Enter).</summary>
@@ -223,7 +237,7 @@ namespace Arena.Sim
         /// <summary>Место в составе для онлайна: команда, герой, слот управления (-1 — бот).</summary>
         public struct Seat { public Team Team; public Hero Hero; public int Slot; }
 
-        public static int TeamSize(GameMode mode) => mode == GameMode.OneVsOne ? 1 : mode == GameMode.TwoVsTwo ? 2 : 4;
+        public static int TeamSize(GameMode mode) => mode == GameMode.OneVsOne ? 1 : mode == GameMode.TwoVsTwo ? 2 : mode == GameMode.ThreeVsThree ? 3 : 4;
 
         /// <summary>Онлайн, хост: живые игроки по командам, свободные места — боты (герои в команде не повторяются).</summary>
         public void SetupLineup(GameMode mode, IList<Seat> humans, int difficulty)
@@ -276,6 +290,10 @@ namespace Arena.Sim
                     Place(P[0], 0.5f, 0.58f); Place(P[1], 0.2f, 0.7f); Place(P[2], 0.8f, 0.7f); Place(P[3], 0.5f, 0.86f);
                     Place(P[4], 0.5f, 0.42f); Place(P[5], 0.2f, 0.3f); Place(P[6], 0.8f, 0.3f); Place(P[7], 0.5f, 0.14f);
                     break;
+                case GameMode.ThreeVsThree: // нападающий у центра, двое по бокам сзади
+                    Place(P[0], 0.5f, 0.58f); Place(P[1], 0.25f, 0.76f); Place(P[2], 0.75f, 0.76f);
+                    Place(P[3], 0.5f, 0.42f); Place(P[4], 0.25f, 0.24f); Place(P[5], 0.75f, 0.24f);
+                    break;
                 case GameMode.TwoVsTwo:
                     Place(P[0], 0.5f, 0.6f); Place(P[1], 0.28f, 0.8f); Place(P[2], 0.5f, 0.4f); Place(P[3], 0.72f, 0.2f);
                     break;
@@ -317,7 +335,7 @@ namespace Arena.Sim
                 {
                     Banner = "";
                     if (Mode == GameMode.Training) { BallTo(Local); return; }
-                    if (ScoreHome >= WIN_GOALS || ScoreAway >= WIN_GOALS || Golden) { Phase = MatchPhase.Ended; return; } // золотой гол — сразу конец
+                    if ((WinGoals > 0 && (ScoreHome >= WinGoals || ScoreAway >= WinGoals)) || Golden) { Phase = MatchPhase.Ended; return; } // золотой гол — сразу конец
                     Kickoff(); Freeze = 0.9f;
                 }
                 return;
@@ -639,7 +657,21 @@ namespace Arena.Sim
             }
             float cap = b.Fire > 0 ? 3400 : 2200, sp = M.Len(b.Vx, b.Vy);
             if (sp > cap) { b.Vx *= cap / sp; b.Vy *= cap / sp; }
+            float px = b.X, py = b.Y;
             b.X += b.Vx * dt; b.Y += b.Vy * dt;
+            // быстрый мяч мог за один тик проскочить полосу у линии ворот мимо створа — тогда его затаскивало
+            // «стенками сетки» внутрь ворот и засчитывался гол. Проверяем, ГДЕ мяч пересёк линию: мимо створа — отскок.
+            bool highBall = b.Z + BR * 2 >= GOALH + 2;
+            if (py >= BR && b.Y < BR)
+            {
+                float cx = px + (b.X - px) * ((py - BR) / Math.Max(1e-4f, py - b.Y));
+                if (cx <= GX1 || cx >= GX2 || highBall) { b.Y = BR; b.Vy = Math.Abs(b.Vy) * T.bounce; }
+            }
+            else if (py <= FH - BR && b.Y > FH - BR)
+            {
+                float cx = px + (b.X - px) * ((FH - BR - py) / Math.Max(1e-4f, b.Y - py));
+                if (cx <= GX1 || cx >= GX2 || highBall) { b.Y = FH - BR; b.Vy = -Math.Abs(b.Vy) * T.bounce; }
+            }
             WallBounceBall();
             bool inMouth = b.X > GX1 && b.X < GX2 && b.Z + BR * 2 < GOALH + 2; // over the crossbar = no goal
             if (b.Y < BR + 2 || b.Y > FH - BR - 2)
@@ -678,7 +710,7 @@ namespace Arena.Sim
             {   // последним осознанно играл мячом защищавшийся — настоящий автогол
                 Stats.OwnGoals++;
                 Log.Add("АВТОГОЛ: " + kk.Hero + " (" + kk.Team + ", " + (kk.IsHuman ? "игрок" : "бот") + "), последнее касание: " + Ball.LastHow
-                        + (lt != kk && lt != null ? " (" + lt.Hero + ")" : "") + "; скорость мяча " + (int)M.Len(Ball.Vx, Ball.Vy) + ", время " + (int)(MATCH_TIME - Clock) + " с");
+                        + (lt != kk && lt != null ? " (" + lt.Hero + ")" : "") + "; скорость мяча " + (int)M.Len(Ball.Vx, Ball.Vy) + ", время " + (int)(Duration - Clock) + " с");
             }
             else if (!training && lt != null && lt.Team != team)
             {   // били соперники, мяч лишь задел защитника — гол после рикошета

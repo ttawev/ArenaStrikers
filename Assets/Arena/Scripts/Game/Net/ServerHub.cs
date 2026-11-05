@@ -23,6 +23,8 @@ namespace Arena.Game
         public St State = St.Lobby;
         public readonly List<LobbySeat> Roster = new List<LobbySeat>();
         public int Difficulty = 1;
+        public GameMode Mode = GameMode.FourVsFour; public int MatchTime = 180, WinGoals = 5; // правила, их выбирает главный
+        public int Cap => Match.TeamSize(Mode) * 2; // мест в комнате при этом формате
         public Match Match;
         public float Acc, SimTime, AutoT, EndT, SendT;
         public int LeaderSlot { get { int m = -1; foreach (var s in Roster) if (m < 0 || s.Slot < m) m = s.Slot; return m; } } // главный — вошедший раньше всех
@@ -68,7 +70,7 @@ namespace Arena.Game
 
     public class ServerHub
     {
-        public const int Capacity = 8;
+        public const int Capacity = 8; // наибольшая комната (4 на 4); у каждой комнаты своя вместимость — ServerRoom.Cap
         /// <summary>Секунд до автостарта после входа первого игрока / после матча.</summary>
         public static float AutoStart = 60;
         /// <summary>Секунд до старта, когда комната заполнилась.</summary>
@@ -144,7 +146,7 @@ namespace Arena.Game
         {   // открытая комната с наибольшим числом игроков — чтобы комнаты быстрее заполнялись
             ServerRoom best = null;
             foreach (var r in Rooms)
-                if (r.State == ServerRoom.St.Lobby && r.Roster.Count < Capacity && (best == null || r.Roster.Count > best.Roster.Count)) best = r;
+                if (r.State == ServerRoom.St.Lobby && r.Roster.Count < r.Cap && (best == null || r.Roster.Count > best.Roster.Count)) best = r;
             if (best != null) return best;
             best = new ServerRoom { No = nextNo++, AutoT = AutoStart };
             Rooms.Add(best);
@@ -182,14 +184,14 @@ namespace Arena.Game
                 r.Roster.Add(s); byClient[from] = r; r.ResetSlot(slot);
                 if (r.Roster.Count == 1) r.AutoT = AutoStart;
                 s.Name = Clean(name, slot); s.Hero = FreeHero(r, s, (Hero)hero, t);
-                Debug.Log("[Arena] «" + s.Name + "» → комната #" + r.No + " (" + r.Roster.Count + "/" + Capacity + ")");
+                Debug.Log("[Arena] «" + s.Name + "» → комната #" + r.No + " (" + r.Roster.Count + "/" + r.Cap + ")");
             }
             else
             {   // уже в комнате: смена героя/команды (команда — если там есть место)
                 var s = r.Roster.Find(x => x.ClientId == from); if (s == null) return;
                 s.Name = Clean(name, s.Slot);
                 var want = (Team)team;
-                if (want != s.Team && r.State == ServerRoom.St.Lobby && r.Count(want) < Capacity / 2) s.Team = want;
+                if (want != s.Team && r.State == ServerRoom.St.Lobby && r.Count(want) < r.Cap / 2) s.Team = want;
                 s.Hero = FreeHero(r, s, (Hero)hero, s.Team);
             }
             SendRoster(r);
@@ -206,9 +208,18 @@ namespace Arena.Game
 
         void OnRules(ulong from, FastBufferReader rd)
         {
-            rd.ReadValueSafe(out byte mode); rd.ReadValueSafe(out byte diff);
+            rd.ReadValueSafe(out byte mode); rd.ReadValueSafe(out byte diff); rd.ReadValueSafe(out ushort time); rd.ReadValueSafe(out byte goals);
             if (!IsLeader(from, out var r)) return;
-            r.Difficulty = Mathf.Clamp(diff, 0, 2); // формат на сервере всегда 4 на 4
+            r.Difficulty = Mathf.Clamp(diff, 0, 2);
+            r.MatchTime = Mathf.Clamp(time, 30, 1200); r.WinGoals = Mathf.Clamp(goals, 0, 50);
+            if (r.State == ServerRoom.St.Lobby)
+            {   // формат — не меньше, чем людей в большей команде (лишних не выгоняем)
+                var m = (GameMode)mode;
+                if (m < GameMode.OneVsOne || m > GameMode.FourVsFour) m = GameMode.FourVsFour;
+                int need = Math.Max(r.Count(Team.Home), r.Count(Team.Away));
+                if (Match.TeamSize(m) < need) m = Match.ModeFor(need);
+                r.Mode = m;
+            }
             SendRoster(r);
         }
 
@@ -246,7 +257,7 @@ namespace Arena.Game
             {
                 r.Roster.Remove(s); r.ResetSlot(s.Slot);
                 if (r.Match != null && r.State != ServerRoom.St.Lobby) { var p = r.Match.Players.Find(x => x.HumanSlot == s.Slot); if (p != null) p.HumanSlot = -1; } // дальше за него бот
-                Debug.Log("[Arena] «" + s.Name + "» вышел из комнаты #" + r.No + " (" + r.Roster.Count + "/" + Capacity + ")");
+                Debug.Log("[Arena] «" + s.Name + "» вышел из комнаты #" + r.No + " (" + r.Roster.Count + "/" + r.Cap + ")");
             }
             if (r.Roster.Count == 0) { Rooms.Remove(r); Debug.Log("[Arena] комната #" + r.No + " закрыта (всего " + Rooms.Count + ")"); }
             else SendRoster(r);
@@ -260,7 +271,10 @@ namespace Arena.Game
             r.Match = new Match(tuning, Environment.TickCount ^ (r.No * 7919));
             r.Match.LocalSlot = 99; // своего игрока у сервера нет
             r.Match.PlayIntro = true; // выход команд — его видят все игроки комнаты
-            r.Match.SetupLineup(GameMode.FourVsFour, humans, r.Difficulty);
+            r.Match.Duration = r.MatchTime; r.Match.WinGoals = r.WinGoals;
+            int need = Math.Max(r.Count(Team.Home), r.Count(Team.Away));
+            var mode = Match.TeamSize(r.Mode) < need ? Match.ModeFor(need) : r.Mode;
+            r.Match.SetupLineup(mode, humans, r.Difficulty);
             r.Acc = 0; r.SimTime = 0; r.SendT = 0;
             r.HookIds.Clear(); r.WallIds.Clear(); r.OutEvents.Clear();
             for (int i = 0; i < 8; i++) r.ResetSlot(i);
@@ -270,11 +284,11 @@ namespace Arena.Game
             {
                 using var w = new FastBufferWriter(128, Allocator.Temp, 4096);
                 var m = r.Match;
-                w.WriteValueSafe((byte)m.Mode); w.WriteValueSafe((byte)m.Difficulty); w.WriteValueSafe((byte)m.Players.Count);
+                w.WriteValueSafe((byte)m.Mode); w.WriteValueSafe((byte)m.Difficulty); w.WriteValueSafe((ushort)m.Duration); w.WriteValueSafe((byte)m.WinGoals); w.WriteValueSafe((byte)m.Players.Count);
                 foreach (var p in m.Players) { w.WriteValueSafe((byte)p.Team); w.WriteValueSafe((byte)p.Hero); w.WriteValueSafe((sbyte)p.HumanSlot); }
                 nm.CustomMessagingManager.SendNamedMessage("start", to, w, NetworkDelivery.ReliableSequenced);
             }
-            Debug.Log("[Arena] комната #" + r.No + ": матч начат, людей " + humans.Count + ", ботов " + (Capacity - humans.Count));
+            Debug.Log("[Arena] комната #" + r.No + ": матч начат, " + Match.ModeName(mode) + ", " + Match.TimeName(r.MatchTime) + ", " + Match.GoalsName(r.WinGoals) + ", людей " + humans.Count + ", ботов " + (r.Match.Players.Count - humans.Count));
         }
 
         List<ulong> Ids(ServerRoom r) { var l = new List<ulong>(r.Roster.Count); foreach (var s in r.Roster) l.Add(s.ClientId); return l; }
@@ -284,12 +298,12 @@ namespace Arena.Game
             if (nm == null || !nm.IsListening) return;
             var to = Ids(r); if (to.Count == 0) return;
             using var w = new FastBufferWriter(256, Allocator.Temp, 4096);
-            w.WriteValueSafe((byte)GameMode.FourVsFour); w.WriteValueSafe((byte)r.Difficulty); w.WriteValueSafe((byte)r.Roster.Count);
+            w.WriteValueSafe((byte)r.Mode); w.WriteValueSafe((byte)r.Difficulty); w.WriteValueSafe((ushort)r.MatchTime); w.WriteValueSafe((byte)r.WinGoals); w.WriteValueSafe((byte)r.Roster.Count);
             foreach (var s in r.Roster) { w.WriteValueSafe(s.ClientId); w.WriteValueSafe((byte)s.Slot); w.WriteValueSafe(s.Name ?? ""); w.WriteValueSafe((byte)s.Hero); w.WriteValueSafe((byte)s.Team); w.WriteValueSafe((short)s.Ping); }
             // версия 3: комната, главный, автостарт, вместимость
             w.WriteValueSafe((ushort)r.No); w.WriteValueSafe((sbyte)r.LeaderSlot);
             w.WriteValueSafe((short)(r.State == ServerRoom.St.Lobby ? Mathf.CeilToInt(Mathf.Max(0, r.AutoT)) : -1));
-            w.WriteValueSafe((byte)Capacity);
+            w.WriteValueSafe((byte)r.Cap);
             nm.CustomMessagingManager.SendNamedMessage("roster", to, w, NetworkDelivery.ReliableSequenced);
         }
 
@@ -312,7 +326,7 @@ namespace Arena.Game
                 {
                     case ServerRoom.St.Lobby:
                         if (r.Roster.Count == 0) break;
-                        if (r.Roster.Count >= Capacity) r.AutoT = Mathf.Min(r.AutoT, FullStart);
+                        if (r.Roster.Count >= r.Cap) r.AutoT = Mathf.Min(r.AutoT, FullStart);
                         r.AutoT -= dt;
                         if (r.AutoT <= 0) StartMatch(r);
                         break;

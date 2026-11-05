@@ -9,7 +9,7 @@ namespace Arena.Sim
 
     public enum Hero { Fire, Hook, Teleport, Curve, Shade, Wall }
 
-    public enum GameMode { Training = 0, OneVsOne = 1, TwoVsTwo = 2, FourVsFour = 4 }
+    public enum GameMode { Training = 0, OneVsOne = 1, TwoVsTwo = 2, ThreeVsThree = 3, FourVsFour = 4 }
 
     /// <summary>One tick of input from a human (or, later, from the network).
     /// Kick, Lob, CurveLeft, CurveRight are held buttons; Dash, Ability, BallToMe fire once on the tick they were pressed.</summary>

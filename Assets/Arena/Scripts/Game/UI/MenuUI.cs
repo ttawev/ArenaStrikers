@@ -17,8 +17,10 @@ namespace Arena.Game
     public interface IMenuHost
     {
         int HeroIndex { get; set; }
-        int ModeIndex { get; set; }   // 0 — 1 на 1, 1 — 2 на 2, 2 — 4 на 4, 3 — тренировка
+        int ModeIndex { get; set; }   // 0 — 1 на 1, 1 — 2 на 2, 2 — 3 на 3, 3 — 4 на 4, 4 — тренировка
         int DiffIndex { get; set; }
+        int TimeIndex { get; set; }   // длительность матча: Match.TimeOptions
+        int GoalsIndex { get; set; }  // голов до победы: Match.GoalOptions
         string PlayerName { get; set; }
         string JoinCode { get; set; }
         string ServerAddress { get; set; }   // адрес своего выделенного сервера (IP или IP:порт)
@@ -63,9 +65,11 @@ namespace Arena.Game
             new Color(1f, 0.54f, 0.12f), new Color(0.89f, 0.77f, 0.54f), new Color(0.56f, 0.85f, 1f),
             new Color(0.5f, 0.91f, 0.82f), new Color(0.71f, 0.55f, 1f), new Color(0.62f, 0.91f, 1f),
         };
-        static readonly string[] ModeName = { "1 на 1", "2 на 2", "4 на 4", "Тренировка" };
+        static readonly string[] ModeName = { "1 на 1", "2 на 2", "3 на 3", "4 на 4", "Тренировка" };
         static readonly string[] DiffName = { "Лёгкий", "Средний", "Сложный" };
-        static readonly GameMode[] RoomModes = { GameMode.OneVsOne, GameMode.TwoVsTwo, GameMode.FourVsFour };
+        static readonly GameMode[] RoomModes = { GameMode.OneVsOne, GameMode.TwoVsTwo, GameMode.ThreeVsThree, GameMode.FourVsFour };
+        static int Step(int[] opts, int cur, int dir) { int i = Array.IndexOf(opts, cur); if (i < 0) i = 0; return opts[Mathf.Clamp(i + dir, 0, opts.Length - 1)]; }
+        static string RulesText(Online n) => Match.ModeName(n.Mode) + "  ·  " + Match.TimeName(n.MatchTime) + "  ·  " + Match.GoalsName(n.WinGoals);
 
         class Item { public VisualElement El; public Action Submit, Left, Right, Focus; public TextField Text; }
         class Page { public VisualElement Root; public readonly List<Item> Items = new List<Item>(); public int Index; public Action Back; }
@@ -257,10 +261,13 @@ namespace Arena.Game
                 el.Add(chip); el.Add(texts);
                 var it = AddItem(heroes, s, el);
                 it.Focus = () => host.HeroIndex = h;
-                it.Submit = () => SetIndex(heroes, 8); // к кнопке «В бой»
+                it.Submit = () => SetIndex(heroes, 10); // к кнопке «В бой»
                 refreshers.Add(() => el.EnableInClassList("selected", host.HeroIndex == h));
             }
-            Selector(heroes, s, "Формат", () => ModeName[Mathf.Clamp(host.ModeIndex, 0, 3)], () => host.ModeIndex = (host.ModeIndex + 3) % 4, () => host.ModeIndex = (host.ModeIndex + 1) % 4);
+            int nm = ModeName.Length;
+            Selector(heroes, s, "Формат", () => ModeName[Mathf.Clamp(host.ModeIndex, 0, nm - 1)], () => host.ModeIndex = (host.ModeIndex + nm - 1) % nm, () => host.ModeIndex = (host.ModeIndex + 1) % nm);
+            Selector(heroes, s, "Время", () => host.ModeIndex == nm - 1 ? "—" : Match.TimeName(Match.TimeOptions[host.TimeIndex]), () => host.TimeIndex--, () => host.TimeIndex++);
+            Selector(heroes, s, "Голы", () => host.ModeIndex == nm - 1 ? "—" : Match.GoalsName(Match.GoalOptions[host.GoalsIndex]), () => host.GoalsIndex--, () => host.GoalsIndex++);
             Selector(heroes, s, "Соперники", () => DiffName[Mathf.Clamp(host.DiffIndex, 0, 2)], () => host.DiffIndex = Mathf.Max(0, host.DiffIndex - 1), () => host.DiffIndex = Mathf.Min(2, host.DiffIndex + 1));
             Button(heroes, s, "В БОЙ!", () => host.StartOffline(), "item-primary");
             Button(heroes, s, "Назад", () => Show(Screen.Main), "item-small");
@@ -311,6 +318,8 @@ namespace Arena.Game
             s.Add(L("КОМНАТА", "header", fHead));
             codeLabel = L("", "code", fHead); s.Add(codeLabel);
             refreshers.Add(() => { string c = host.Net != null ? host.Net.Code : ""; if (codeLabel.text != c) codeLabel.text = c; });
+            var rulesLabel = L("", "note"); s.Add(rulesLabel); // формат, время, голы — видят все
+            refreshers.Add(() => { var n = host.Net; string t = n == null ? "" : RulesText(n); if (rulesLabel.text != t) rulesLabel.text = t; });
             var autoLabel = L("", "note"); s.Add(autoLabel); // «Найти матч»: сколько ждать до автостарта
             refreshers.Add(() =>
             {
@@ -326,6 +335,22 @@ namespace Arena.Game
             Info(room);
         }
 
+        /// <summary>Формат, длительность и голы до победы (хост комнаты или главный на сервере).</summary>
+        void RulesSelectors(Online net)
+        {
+            int n = RoomModes.Length;
+            int Mi() => Math.Max(0, Array.IndexOf(RoomModes, net.Mode));
+            Selector(room, roomItemsBox, "Формат", () => Match.ModeName(net.Mode),
+                     () => net.SetRules(RoomModes[(Mi() + n - 1) % n], net.Difficulty, net.MatchTime, net.WinGoals),
+                     () => net.SetRules(RoomModes[(Mi() + 1) % n], net.Difficulty, net.MatchTime, net.WinGoals));
+            Selector(room, roomItemsBox, "Время", () => Match.TimeName(net.MatchTime),
+                     () => net.SetRules(net.Mode, net.Difficulty, Step(Match.TimeOptions, net.MatchTime, -1), net.WinGoals),
+                     () => net.SetRules(net.Mode, net.Difficulty, Step(Match.TimeOptions, net.MatchTime, 1), net.WinGoals));
+            Selector(room, roomItemsBox, "Голы", () => Match.GoalsName(net.WinGoals),
+                     () => net.SetRules(net.Mode, net.Difficulty, net.MatchTime, Step(Match.GoalOptions, net.WinGoals, -1)),
+                     () => net.SetRules(net.Mode, net.Difficulty, net.MatchTime, Step(Match.GoalOptions, net.WinGoals, 1)));
+        }
+
         /// <summary>Пункты комнаты зависят от того, хост ли ты, — пересобираются при смене.</summary>
         void RebuildRoomItems()
         {
@@ -337,6 +362,7 @@ namespace Arena.Game
                      () => host.SetRoomTeam(host.RoomTeam == Team.Home ? Team.Away : Team.Home), () => host.SetRoomTeam(host.RoomTeam == Team.Home ? Team.Away : Team.Home));
             if (net.ViaServer && net.IsLeader) // «Найти матч»: главный (вошёл первым) начинает сразу или ждёт игроков
             {
+                RulesSelectors(net);
                 Selector(room, roomItemsBox, "Боты", () => DiffName[Mathf.Clamp(net.Difficulty, 0, 2)],
                          () => net.SetMode(net.Mode, Math.Max(0, net.Difficulty - 1)), () => net.SetMode(net.Mode, Math.Min(2, net.Difficulty + 1)));
                 Button(room, roomItemsBox, "НАЧАТЬ СЕЙЧАС", () => host.StartRoomMatch(), "item-primary");
@@ -345,9 +371,7 @@ namespace Arena.Game
             else if (net.ViaServer) roomItemsBox.Add(L("Ждём игроков. Начнёт главный (★) или автостарт.", "note"));
             else if (net.IsHost) // комната с другом: хост выбирает формат и сложность
             {
-                Selector(room, roomItemsBox, "Формат", () => ModeName[Math.Max(0, Array.IndexOf(RoomModes, net.Mode))],
-                         () => net.SetMode(RoomModes[(Math.Max(0, Array.IndexOf(RoomModes, net.Mode)) + 2) % 3], net.Difficulty),
-                         () => net.SetMode(RoomModes[(Math.Max(0, Array.IndexOf(RoomModes, net.Mode)) + 1) % 3], net.Difficulty));
+                RulesSelectors(net);
                 Selector(room, roomItemsBox, "Боты", () => DiffName[Mathf.Clamp(net.Difficulty, 0, 2)],
                          () => net.SetMode(net.Mode, Math.Max(0, net.Difficulty - 1)), () => net.SetMode(net.Mode, Math.Min(2, net.Difficulty + 1)));
                 Button(room, roomItemsBox, "НАЧАТЬ МАТЧ", () => host.StartRoomMatch(), "item-primary");

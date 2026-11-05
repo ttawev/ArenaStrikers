@@ -1,5 +1,6 @@
-// Шоу вокруг матча: выход команд перед стартом, золотой гол, экран лучшего игрока (MVP) после матча.
-// Само происходящее на поле считает симуляция (Match: Intro, Golden, статистика) — здесь камера и надписи.
+// Шоу вокруг матча: киношный выход команд, золотой гол, экран лучшего игрока (MVP).
+// Что происходит на поле, считает симуляция (Match: Intro, Golden, статистика) — здесь камера, картинка и надписи.
+// Шрифты — Resources/Fonts/Lato-Heavy и Lato-Bold (OFL), текстуры — из ArenaGame.Banner.cs.
 using Arena.Sim;
 using UnityEngine;
 
@@ -8,7 +9,9 @@ namespace Arena.Game
     public partial class ArenaGame
     {
         static readonly Color GoldCol = new Color(1f, 0.78f, 0.25f);
+        static readonly string[] HeroNamesUpShow = { "ЖАР", "БАГОР", "МИГ", "ВИХРЬ", "ТЕНЬ", "СТЕНА" };
         float endT0 = -10; bool wasEnded;
+        bool showFx; float showFocus = 3; // киношная картинка (глубина резкости, зерно) и расстояние фокуса
 
         /// <summary>Каждый кадр: запомнить момент конца матча (от него идут камера и появление итогов).</summary>
         void TrackShowState()
@@ -19,51 +22,68 @@ namespace Arena.Game
         }
 
         // ---------- камера ----------
-        bool ShowCamOn => ShowCam(out _, out _, out _);
+        // Обычная камера (TargetCamPos) здесь не нужна: планы задаются целиком (ShowPose). Пока игроки разбегаются
+        // на разводку, обычная камера плавно возвращается из последнего плана — для этого ShowCamOn (мягче доводка).
+        bool ShowCamOn => state == State.Playing && match.Intro > 0;
+        bool ShowCam(out Vector3 focus, out float dist, out float tilt) { focus = Vector3.zero; dist = cameraDistance; tilt = cameraTilt; return false; }
 
-        /// <summary>Камера для выхода команд и MVP: куда смотреть, с какого расстояния и под каким наклоном.</summary>
-        bool ShowCam(out Vector3 focus, out float dist, out float tilt)
+        static Vector3 WV(float x, float y, float z) => new Vector3(x, y, z);
+
+        /// <summary>Киношные планы: выход команд (туннель → проезды вдоль строя) и MVP. false — обычная камера.</summary>
+        bool ShowPose(float dt, out Vector3 pos, out Quaternion rot, out float fov)
         {
-            focus = Vector3.zero; dist = cameraDistance; tilt = cameraTilt;
+            pos = Vector3.zero; rot = Quaternion.identity; fov = 30; showFx = false;
             if (CineOn) return false;
+            Vector3 look;
             if (state == State.Playing && match.Intro > 0)
             {
                 int st = match.IntroStage; float e = match.IntroStageTime;
-                var line = W.Pos(Field.FW * 0.42f, Field.FH / 2, 60);
+                float lineZ = (Field.FW / 2 - Field.FW * 0.42f) * W.S; // строй стоит здесь (Match.LineSpot), лицом к камере
                 if (st == 0)
-                {   // герои выбегают из туннеля: камера едет от туннеля к линии
+                {   // план 1: камера низко перед строем, герои выбегают из туннеля прямо на нас
                     float k = Mathf.SmoothStep(0, 1, e / Mathf.Max(0.1f, match.T.introRun));
-                    focus = Vector3.Lerp(W.Pos(120, Field.FH / 2, 40), line, k);
-                    dist = Mathf.Lerp(12, 8, k); tilt = Mathf.Lerp(40, 22, k);
-                    return true;
+                    pos = Vector3.Lerp(WV(-2.2f, 0.6f, lineZ - 5.8f), WV(0.2f, 1.2f, lineZ - 4.2f), k);
+                    look = Vector3.Lerp(WV(0, 1.6f, 9.5f), WV(0, 1.0f, lineZ), k * k);
+                    fov = Mathf.Lerp(34, 30, k);
                 }
-                if (st == 1)
-                {   // стоят в линию: камера низко и близко проезжает вдоль строя слева направо
-                    float k = Mathf.SmoothStep(0, 1, e / Mathf.Max(0.1f, match.T.introPose));
-                    float y = Mathf.Lerp(Field.FH / 2 + 330, Field.FH / 2 - 330, k);
-                    focus = W.Pos(Field.FW * 0.42f, y, 95);
-                    dist = 6.2f; tilt = 15;
-                    return true;
+                else if (st == 1)
+                {   // планы 2 и 3: медленный проезд вдоль синих, потом — склейка — вдоль красных
+                    float half = match.T.introPose / 2;
+                    bool home = e < half;
+                    float u = (home ? e : e - half) / Mathf.Max(0.1f, half);
+                    float x = home ? Mathf.Lerp(-4.6f, -0.5f, u) : Mathf.Lerp(0.5f, 4.6f, u);
+                    pos = WV(x, 1.12f, lineZ - Mathf.Lerp(2.0f, 1.6f, u));
+                    look = WV(x + 0.75f, 1.0f, lineZ);
+                    fov = 27;
                 }
-                return false; // разбегаются на разводку — обычная камера плавно возвращается
+                else return false; // разбегаются на разводку — обычная камера плавно возвращается
             }
-            if (state == State.Ended)
+            else if (state == State.Ended)
             {
                 var mvp = match.Mvp();
                 float t = uiTime - endT0;
-                if (mvp == null || t < 0.6f) return false;
-                focus = W.Pos(mvp.X, mvp.Y, 85);
-                float hl = Field.FH / 2 * W.S, hw = Field.FW / 2 * W.S;
-                focus.x = Mathf.Clamp(focus.x, -hl + 1, hl - 1); focus.z = Mathf.Clamp(focus.z, -hw + 0.5f, hw - 0.5f);
-                float k = Mathf.SmoothStep(0, 1, (t - 0.6f) / 3f);
-                dist = Mathf.Lerp(7.5f, 4.4f, k); tilt = Mathf.Lerp(30, 16, k);
-                return true;
+                if (mvp == null || t < 0.5f) return false;
+                // MVP стоит лицом к камере (HeroView); камера медленно облетает его и подъезжает, герой — в правой трети кадра
+                float k = Mathf.SmoothStep(0, 1, (t - 0.5f) / 7f);
+                Vector3 p = W.Pos(mvp.X, mvp.Y);
+                float ang = Mathf.Lerp(-20, 6, k), dist = Mathf.Lerp(4.4f, 3.1f, k);
+                var yaw = Quaternion.Euler(0, ang, 0);
+                float minZ = -Field.FW / 2 * W.S - 1.4f; // за ближним бортом трибуны — камера не уходит дальше
+                Vector3 back = yaw * WV(0, 0, -dist);
+                if (p.z + back.z < minZ) back *= Mathf.Max(0.45f, (p.z - minZ) / Mathf.Max(0.01f, -back.z));
+                pos = p + back + Vector3.up * Mathf.Lerp(1.35f, 1.1f, k);
+                look = p + Vector3.up * 1.0f - yaw * Vector3.right * 0.85f;
+                fov = 30;
             }
-            return false;
+            else return false;
+            rot = Quaternion.LookRotation(look - pos, Vector3.up);
+            showFx = true; showFocus = Vector3.Distance(pos, look);
+            return true;
         }
 
         // ---------- кто это ----------
         static string HeroName(Hero h) => HeroNames[(int)h];
+        static string HeroUp(Hero h) => HeroNamesUpShow[(int)h];
 
         /// <summary>Подпись игрока: имя в онлайне, «Ты» офлайн, иначе «бот».</summary>
         string Who(SimPlayer p)
@@ -78,153 +98,263 @@ namespace Arena.Game
             return p == match.Local ? "Ты" : "игрок";
         }
 
-        GUIStyle tagStyle, statStyle, cardTitle;
-        void ShowStyles()
+        // ---------- текст и плашки ----------
+        static Font fontBoldShow;
+        GUIStyle sTxt;
+        float K => Screen.height / 1080f;
+
+        void ShowAssets()
         {
-            if (tagStyle != null) return;
-            tagStyle = new GUIStyle(GUI.skin.label) { fontSize = 18, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
-            statStyle = new GUIStyle(GUI.skin.label) { fontSize = 16, alignment = TextAnchor.MiddleLeft };
-            cardTitle = new GUIStyle(GUI.skin.label) { fontSize = 56, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleLeft };
+            BannerAssets();
+            if (fontBoldShow == null) fontBoldShow = Resources.Load<Font>("Fonts/Lato-Bold");
+            if (sTxt == null) sTxt = new GUIStyle(GUI.skin.label) { clipping = TextClipping.Overflow, wordWrap = false, richText = false };
+        }
+
+        /// <summary>Надпись: размер — в пикселях при высоте экрана 1080 (масштабируется), с тенью; glow — ореол цветом gc.</summary>
+        void Txt(Rect r, string s, float size, Color c, TextAnchor a, bool heavy = true, float glow = 0, Color gc = default)
+        {
+            ShowAssets();
+            var f = heavy ? fontHeavy : (fontBoldShow != null ? fontBoldShow : fontHeavy);
+            sTxt.font = f; sTxt.fontStyle = f != null ? FontStyle.Normal : FontStyle.Bold;
+            sTxt.fontSize = Mathf.Max(8, Mathf.RoundToInt(size * K)); sTxt.alignment = a;
+            var old = GUI.color; GUI.color = Color.white;
+            if (glow > 0)
+            {
+                float gr = glow * K; sTxt.normal.textColor = new Color(gc.r, gc.g, gc.b, 0.3f * c.a);
+                for (int i = 0; i < 8; i++) { float an = i * Mathf.PI / 4; GUI.Label(new Rect(r.x + Mathf.Cos(an) * gr, r.y + Mathf.Sin(an) * gr, r.width, r.height), s, sTxt); }
+            }
+            sTxt.normal.textColor = new Color(0, 0, 0, 0.6f * c.a);
+            GUI.Label(new Rect(r.x + 2 * K, r.y + 3 * K, r.width, r.height), s, sTxt);
+            sTxt.normal.textColor = c;
+            GUI.Label(r, s, sTxt);
+            GUI.color = old;
+        }
+
+        void Plate(Rect r, Color c) { ShowAssets(); var old = GUI.color; GUI.color = c; GUI.Box(r, GUIContent.none, bRound); GUI.color = old; }
+        static void Fill(Rect r, Color c) { var old = GUI.color; GUI.color = c; GUI.DrawTexture(r, Texture2D.whiteTexture); GUI.color = old; }
+        static Color A(Color c, float a) => new Color(c.r, c.g, c.b, c.a * a);
+        static Color Tint(Color c, float a) => new Color(c.r * 0.55f + 0.45f, c.g * 0.55f + 0.45f, c.b * 0.55f + 0.45f, a);
+
+        /// <summary>Чёрные полосы кино сверху и снизу (k — 0..1, насколько выехали).</summary>
+        static void Letterbox(float w, float h, float k, float top, float bottom)
+        {
+            if (k <= 0) return;
+            Fill(new Rect(0, 0, w, h * top * k), Color.black);
+            Fill(new Rect(0, h - h * bottom * k, w, h * bottom * k), Color.black);
         }
 
         // ---------- выход команд ----------
         void IntroGui(float w, float h)
         {
-            ShowStyles();
+            ShowAssets();
+            float k = K;
             int st = match.IntroStage; float e = match.IntroStageTime;
-            // заголовок: «СИНИЕ vs КРАСНЫЕ» и формат
-            float a = st == 2 ? Mathf.Clamp01(1 - e / 0.4f) : Mathf.Clamp01((st == 0 ? e : 1) / 0.5f);
-            if (a > 0)
-            {
-                var old = GUI.color;
-                float y = h * 0.06f;
-                string mode = match.Mode == GameMode.OneVsOne ? "1 на 1" : match.Mode == GameMode.TwoVsTwo ? "2 на 2" : "4 на 4";
-                Shadowed(new Rect(0, y, w / 2 - 60, 60), "СИНИЕ", big.Right(), new Color(Mat.Home.r, Mat.Home.g, Mat.Home.b, a));
-                Shadowed(new Rect(w / 2 - 60, y, 120, 60), "vs", mid, new Color(1, 1, 1, a));
-                Shadowed(new Rect(w / 2 + 60, y, w / 2 - 60, 60), "КРАСНЫЕ", big.Left(), new Color(Mat.Away.r, Mat.Away.g, Mat.Away.b, a));
-                Shadowed(new Rect(0, y + 58, w, 30), mode, mid.Small(), new Color(0.85f, 0.92f, 0.9f, a * 0.9f));
-                GUI.color = old;
-            }
-            // в строю: имя героя и игрока над головой
-            if (st == 1 && cam != null)
-            {
-                float ta = Mathf.Clamp01((e - 0.3f) / 0.4f) * Mathf.Clamp01((match.T.introPose - e) / 0.3f);
-                foreach (var p in match.Players)
+            float bars = st == 0 ? EaseOut(e / 0.45f) : st == 1 ? 1 : 1 - EaseOut(e / 0.5f);
+            Letterbox(w, h, bars, 0.11f, 0.11f);
+
+            if (st == 0)
+            {   // план 1: «СИНИЕ  VS  КРАСНЫЕ»
+                float run = match.T.introRun;
+                float a = Mathf.Clamp01((e - 0.5f) / 0.4f) * Mathf.Clamp01((run - e) / 0.35f);
+                if (a > 0)
                 {
-                    var sp = cam.WorldToScreenPoint(W.Pos(p.X, p.Y, 215));
-                    if (sp.z <= 0 || sp.x < -100 || sp.x > w + 100) continue;
-                    float x = sp.x, y = h - sp.y;
-                    Color tc = p.Team == Team.Home ? Mat.Home : Mat.Away;
-                    Shadowed(new Rect(x - 110, y - 46, 220, 26), HeroName(p.Hero), tagStyle, new Color(1, 1, 1, ta));
-                    Shadowed(new Rect(x - 110, y - 22, 220, 22), Who(p), small.Center(), new Color(tc.r * 0.6f + 0.4f, tc.g * 0.6f + 0.4f, tc.b * 0.6f + 0.4f, ta));
+                    float y = h * 0.66f, rise = (1 - EaseOut((e - 0.5f) / 0.5f)) * 24 * k;
+                    string mode = Match.ModeName(match.Mode).ToUpperInvariant();
+                    Txt(new Rect(0, y - 46 * k + rise, w, 36 * k), "АРЕНА СТРАЙКЕРОВ  ·  " + mode, 24, new Color(0.85f, 0.9f, 0.9f, 0.85f * a), TextAnchor.MiddleCenter, false);
+                    Txt(new Rect(0, y + rise, w / 2 - 70 * k, 100 * k), "СИНИЕ", 92, A(Color.white, a), TextAnchor.MiddleRight, true, 6, Mat.Home);
+                    Txt(new Rect(w / 2 - 70 * k, y + rise, 140 * k, 100 * k), "VS", 44, A(GoldCol, a), TextAnchor.MiddleCenter);
+                    Txt(new Rect(w / 2 + 70 * k, y + rise, w / 2 - 70 * k, 100 * k), "КРАСНЫЕ", 92, A(Color.white, a), TextAnchor.MiddleLeft, true, 6, Mat.Away);
+                    Fill(new Rect(w / 2 - 70 * k - 380 * k, y + 104 * k + rise, 380 * k * a, 5 * k), A(Mat.Home, a));
+                    Fill(new Rect(w / 2 + 70 * k, y + 104 * k + rise, 380 * k * a, 5 * k), A(Mat.Away, a));
                 }
             }
-            if (net == null)
-            {
-                GUI.color = new Color(1, 1, 1, 0.55f);
-                GUI.Label(new Rect(24, h - 34, w * 0.5f, 24), (input.UsingGamepad ? "A" : "Enter") + " — пропустить", small);
-                GUI.color = Color.white;
+            else if (st == 1)
+            {   // планы 2–3: титр команды слева внизу и имена над головами
+                float half = match.T.introPose / 2;
+                bool home = e < half;
+                float u = home ? e : e - half;
+                Team team = home ? Team.Home : Team.Away;
+                Color tc = home ? Mat.Home : Mat.Away;
+                float a = EaseOut(u / 0.35f) * Mathf.Clamp01((half - u) / 0.25f);
+                float slide = (1 - EaseOut(u / 0.45f)) * -80 * k;
+                float x = w * 0.06f + slide, y = h * 0.6f;
+                Fill(new Rect(x, y, 9 * k, 150 * k * EaseOut(u / 0.3f)), A(tc, a));
+                Txt(new Rect(x + 30 * k, y - 8 * k, w, 100 * k), home ? "СИНИЕ" : "КРАСНЫЕ", 96, A(Color.white, a), TextAnchor.MiddleLeft, true, 6, tc);
+                var sb = new System.Text.StringBuilder();
+                foreach (var p in match.Players) if (p.Team == team) sb.Append(sb.Length > 0 ? "   ·   " : "").Append(HeroUp(p.Hero));
+                Txt(new Rect(x + 34 * k, y + 92 * k, w, 44 * k), sb.ToString(), 30, new Color(1, 1, 1, 0.85f * a), TextAnchor.MiddleLeft, false);
+
+                if (cam != null)
+                    foreach (var p in match.Players)
+                    {
+                        if (p.Team != team) continue;
+                        var sp = cam.WorldToScreenPoint(W.Pos(p.X, p.Y, 225));
+                        if (sp.z <= 0 || sp.x < -150 || sp.x > w + 150) continue;
+                        float tx = sp.x, ty = h - sp.y;
+                        float ta = a * Mathf.Clamp01(1 - Mathf.Abs(tx - w * 0.55f) / (w * 0.55f)) * 1.6f; // у краёв кадра — бледнее
+                        ta = Mathf.Clamp01(ta);
+                        if (ta <= 0.01f) continue;
+                        Txt(new Rect(tx - 200 * k, ty - 64 * k, 400 * k, 44 * k), HeroUp(p.Hero), 40, A(Color.white, ta), TextAnchor.MiddleCenter);
+                        Fill(new Rect(tx - 34 * k, ty - 20 * k, 68 * k, 4 * k), A(tc, ta));
+                        Txt(new Rect(tx - 200 * k, ty - 16 * k, 400 * k, 30 * k), Who(p), 22, Tint(tc, ta), TextAnchor.MiddleCenter, false);
+                    }
             }
+            if (net == null && bars > 0.5f)
+                Txt(new Rect(0, h - h * 0.11f, w - 40 * k, h * 0.11f), (input.UsingGamepad ? "A" : "Enter") + "  —  пропустить", 20, new Color(1, 1, 1, 0.45f), TextAnchor.MiddleRight, false);
         }
 
         // ---------- золотой гол ----------
-        /// <summary>Перед разводкой золотого гола: крупная надпись.</summary>
+        /// <summary>Перед разводкой золотого гола: крупная надпись на ленте.</summary>
         void GoldenBanner(float w, float h)
         {
-            float t = match.T.goldenPause - match.Freeze;
-            float s = Spring(t);
-            var r = new Rect(0, h * 0.3f, w, 100);
-            GUIUtility.ScaleAroundPivot(Vector2.one * Mathf.Max(0.01f, s), r.center);
-            Shadowed(r, "ЗОЛОТОЙ ГОЛ", banner, Color.Lerp(GoldCol, Color.white, 0.25f + 0.25f * Mathf.Sin(uiTime * 6)));
-            GUI.matrix = Matrix4x4.identity;
-            float a = Mathf.Clamp01((t - 0.35f) / 0.3f);
-            Shadowed(new Rect(0, h * 0.3f + 96, w, 36), "Ничья! Кто забьёт — тот победил", mid, new Color(1, 1, 1, a));
+            ShowAssets();
+            float k = K, t = match.T.goldenPause - match.Freeze;
+            float fade = Mathf.Clamp01(match.Freeze / 0.3f);
+            float cy = h * 0.3f, bandH = 170 * k;
+            var old = GUI.color;
+            GUI.color = new Color(GoldCol.r, GoldCol.g, GoldCol.b, 0.4f * EaseOut(t / 0.3f) * fade);
+            GUI.DrawTexture(new Rect(w / 2 - 560 * k, cy - 280 * k, 1120 * k, 560 * k), texGlow);
+            float bw = w * 1.1f * EaseOut(t / 0.25f);
+            var band = new Rect(w / 2 - bw / 2, cy - bandH / 2, bw, bandH);
+            GUI.color = new Color(0.04f, 0.03f, 0.01f, 0.86f * fade); GUI.DrawTexture(band, texBand);
+            GUI.color = new Color(GoldCol.r, GoldCol.g, GoldCol.b, fade);
+            GUI.DrawTexture(new Rect(band.x, band.y - 6 * k, band.width, 6 * k), texBand);
+            GUI.DrawTexture(new Rect(band.x, band.yMax, band.width, 6 * k), texBand);
+            GUI.color = old;
+            float s = Spring(t - 0.08f);
+            if (s > 0.01f)
+            {
+                var r = new Rect(0, cy - bandH / 2 - 14 * k, w, bandH);
+                var m = GUI.matrix; GUIUtility.ScaleAroundPivot(Vector2.one * s, r.center);
+                Txt(r, "ЗОЛОТОЙ ГОЛ", 112, A(Color.Lerp(GoldCol, Color.white, 0.3f + 0.2f * Mathf.Sin(uiTime * 6)), fade), TextAnchor.MiddleCenter, true, 6, GoldCol);
+                GUI.matrix = m;
+            }
+            float a = Mathf.Clamp01((t - 0.35f) / 0.3f) * fade;
+            Txt(new Rect(0, cy + 38 * k, w, 40 * k), "НИЧЬЯ!  КТО ЗАБЬЁТ — ТОТ ПОБЕДИЛ", 28, new Color(1, 1, 1, 0.9f * a), TextAnchor.MiddleCenter, false);
         }
 
         /// <summary>Пока идёт золотой гол: метка вверху по центру.</summary>
         void GoldenTag(float w, float h)
         {
-            float p = 0.75f + 0.25f * Mathf.Sin(uiTime * 4);
-            Shadowed(new Rect(0, 12, w, 34), "ЗОЛОТОЙ ГОЛ", mid, new Color(GoldCol.r, GoldCol.g, GoldCol.b, p));
+            float k = K, p = 0.75f + 0.25f * Mathf.Sin(uiTime * 4);
+            var r = new Rect(w / 2 - 170 * k, 12 * k, 340 * k, 48 * k);
+            Plate(r, new Color(0.05f, 0.04f, 0.01f, 0.75f));
+            Txt(r, "ЗОЛОТОЙ ГОЛ", 30, A(GoldCol, p), TextAnchor.MiddleCenter);
         }
 
         // ---------- итоги матча и MVP ----------
         string EndedHint() =>
             net == null ? "A / Enter — ещё матч     B / Backspace — в меню"
-            : IsHostOnline || net.IsLeader ? "A / Enter — ещё матч (для всех)     B / Backspace — выйти из комнаты"
-            : net.ViaServer ? "Ждём, пока главный начнёт новый матч…     B / Backspace — выйти" : "Ждём, пока хост начнёт новый матч…     B / Backspace — выйти";
+            : "A / Enter — в комнату (сменить героя, начать новый матч)     B / Backspace — выйти";
 
-        static string Stats(SimPlayer p) => "Голы " + p.Goals + "  ·  Передачи " + p.Assists + "  ·  Сейвы " + p.Saves + "  ·  Отборы " + p.Steals;
+        static readonly string[] StatNames = { "ГОЛЫ", "ПЕРЕДАЧИ", "СЕЙВЫ", "ОТБОРЫ" };
+        static int[] StatVals(SimPlayer p) => new[] { p.Goals, p.Assists, p.Saves, p.Steals };
 
         void MvpGui(float w, float h, string hint)
         {
-            ShowStyles();
+            ShowAssets();
+            float k = K, t = uiTime - endT0;
             var mvp = match.Mvp();
-            float t = uiTime - endT0;
-            float a = Mathf.Clamp01((t - 0.9f) / 0.5f);
             bool away = match.Local.Team == Team.Away; int mine = away ? match.ScoreAway : match.ScoreHome, theirs = away ? match.ScoreHome : match.ScoreAway;
             string title = mine > theirs ? "ПОБЕДА" : mine < theirs ? "ПОРАЖЕНИЕ" : "НИЧЬЯ";
-            Color titleCol = mine > theirs ? Mat.Accent : mine < theirs ? new Color(0.85f, 0.88f, 0.9f) : Color.white;
+            Color titleCol = mine > theirs ? GoldCol : mine < theirs ? new Color(0.8f, 0.84f, 0.88f) : Color.white;
 
-            // затемнение снизу и сверху, середина — герой
-            GUI.color = new Color(0, 0, 0, 0.45f * Mathf.Clamp01(t / 0.6f));
-            GUI.DrawTexture(new Rect(0, 0, w, h * 0.17f), Texture2D.whiteTexture);
-            GUI.DrawTexture(new Rect(0, h * 0.70f, w, h * 0.30f), Texture2D.whiteTexture);
-            GUI.color = Color.white;
+            // кино: полоса сверху и широкая полоса статистики снизу
+            float bars = EaseOut((t - 0.4f) / 0.5f);
+            float topH = 0.14f, botH = 0.25f;
+            Fill(new Rect(0, 0, w, h * topH * bars), new Color(0, 0, 0, 0.92f));
+            Fill(new Rect(0, h - h * botH * bars, w, h * botH * bars), new Color(0, 0, 0, 0.88f));
+            if (bars > 0.05f)
+            {
+                Color lc = mvp != null ? (mvp.Team == Team.Home ? Mat.Home : Mat.Away) : GoldCol;
+                Fill(new Rect(0, h * topH * bars - 3 * k, w * bars, 3 * k), A(GoldCol, 0.8f));
+                Fill(new Rect(w * (1 - bars), h - h * botH * bars, w * bars, 3 * k), A(lc, 0.8f));
+            }
 
-            float ts = Spring(t);
-            var tr = new Rect(0, h * 0.025f, w, 64);
-            GUIUtility.ScaleAroundPivot(Vector2.one * Mathf.Max(0.01f, ts), tr.center);
-            Shadowed(tr, title + "   " + mine + " : " + theirs, big, titleCol);
-            GUI.matrix = Matrix4x4.identity;
-            if (match.Golden && match.ScoreHome != match.ScoreAway) Shadowed(new Rect(0, h * 0.025f + 60, w, 28), "золотым голом", mid.Small(), new Color(GoldCol.r, GoldCol.g, GoldCol.b, ts));
-            if (a <= 0 || mvp == null) { Hint(w, h, hint, 1); return; }
+            // итог — в верхней полосе
+            float ts = Spring(t - 0.5f);
+            if (ts > 0.01f)
+            {
+                var tr = new Rect(0, h * 0.012f, w, 84 * k);
+                var m = GUI.matrix; GUIUtility.ScaleAroundPivot(Vector2.one * ts, tr.center);
+                Txt(tr, title, 74, titleCol, TextAnchor.MiddleCenter, true, mine > theirs ? 5 : 0, GoldCol);
+                GUI.matrix = m;
+                float sa = Mathf.Clamp01((t - 0.8f) / 0.3f);
+                string sub = "СИНИЕ  " + match.ScoreHome + " : " + match.ScoreAway + "  КРАСНЫЕ" + (match.Golden && match.ScoreHome != match.ScoreAway ? "   ·   ЗОЛОТЫМ ГОЛОМ" : "");
+                Txt(new Rect(0, h * 0.012f + 80 * k, w, 36 * k), sub, 26, new Color(0.88f, 0.92f, 0.92f, sa), TextAnchor.MiddleCenter, false);
+            }
+            if (mvp == null) { Txt(new Rect(0, h - 46 * k, w, 36 * k), hint, 22, new Color(0.8f, 0.88f, 0.86f, 0.9f), TextAnchor.MiddleCenter, false); return; }
 
-            // карточка лучшего игрока — слева, герой в центре кадра
-            float cx = w * 0.06f, cy = h * 0.27f, slide = (1 - Mathf.SmoothStep(0, 1, a)) * -60;
-            var oldC = GUI.color;
-            Shadowed(new Rect(cx + slide, cy, 520, 30), "ЛУЧШИЙ ИГРОК МАТЧА", mid.Left(), new Color(GoldCol.r, GoldCol.g, GoldCol.b, a));
+            // карточка лучшего игрока — слева; герой стоит в правой трети кадра
             Color tc = mvp.Team == Team.Home ? Mat.Home : Mat.Away;
-            Shadowed(new Rect(cx + slide, cy + 30, 600, 70), HeroName(mvp.Hero).ToUpperInvariant(), cardTitle, new Color(1, 1, 1, a));
-            Shadowed(new Rect(cx + slide, cy + 98, 600, 30), Who(mvp) + "   ·   " + (mvp.Team == Team.Home ? "синие" : "красные"), mid.Left(), new Color(tc.r * 0.6f + 0.4f, tc.g * 0.6f + 0.4f, tc.b * 0.6f + 0.4f, a));
-            Shadowed(new Rect(cx + slide, cy + 134, 700, 28), Stats(mvp), statStyle, new Color(0.9f, 0.95f, 0.93f, a));
-            GUI.color = oldC;
+            float a1 = EaseOut((t - 1.0f) / 0.45f), a2 = EaseOut((t - 1.25f) / 0.45f), a3 = EaseOut((t - 1.5f) / 0.45f);
+            float x = w * 0.06f, y = h * 0.21f;
+            if (a1 > 0)
+            {
+                float sx = (1 - a1) * -60 * k;
+                var tag = new Rect(x + sx, y, 118 * k, 50 * k);
+                Plate(tag, A(GoldCol, a1));
+                Txt(tag, "MVP", 34, new Color(0.08f, 0.06f, 0.02f, a1), TextAnchor.MiddleCenter);
+                Txt(new Rect(tag.xMax + 18 * k, y, w, 50 * k), "ЛУЧШИЙ ИГРОК МАТЧА", 28, A(GoldCol, a1), TextAnchor.MiddleLeft, false);
+            }
+            if (a2 > 0)
+            {
+                float sx = (1 - a2) * -80 * k;
+                Txt(new Rect(x + sx - 4 * k, y + 56 * k, w, 150 * k), HeroUp(mvp.Hero), 136, A(Color.white, a2), TextAnchor.MiddleLeft, true, 7, tc);
+                Txt(new Rect(x + sx, y + 200 * k, w, 50 * k), Who(mvp) + "   ·   " + (mvp.Team == Team.Home ? "синие" : "красные"), 38, Tint(tc, a2), TextAnchor.MiddleLeft, false);
+            }
+            if (a3 > 0)
+            {   // плитки статистики: крупная цифра и подпись
+                int[] v = StatVals(mvp);
+                float tw = 158 * k, th = 128 * k, gap = 14 * k, ty = y + 272 * k;
+                for (int i = 0; i < 4; i++)
+                {
+                    float ai = EaseOut((t - 1.5f - i * 0.08f) / 0.4f);
+                    if (ai <= 0) continue;
+                    var r = new Rect(x + i * (tw + gap), ty + (1 - ai) * 30 * k, tw, th);
+                    Plate(r, new Color(0.03f, 0.05f, 0.1f, 0.82f * ai));
+                    bool hot = v[i] > 0;
+                    if (hot) Fill(new Rect(r.x + 18 * k, r.yMax - 8 * k, r.width - 36 * k, 3 * k), A(GoldCol, ai));
+                    Txt(new Rect(r.x, r.y + 6 * k, r.width, 80 * k), v[i].ToString(), 70, hot ? A(GoldCol, ai) : new Color(1, 1, 1, 0.45f * ai), TextAnchor.MiddleCenter);
+                    Txt(new Rect(r.x, r.y + 82 * k, r.width, 30 * k), StatNames[i], 19, new Color(0.8f, 0.86f, 0.86f, ai), TextAnchor.MiddleCenter, false);
+                }
+            }
 
-            // таблица всех игроков: синие слева, красные справа
-            float b = Mathf.Clamp01((t - 1.6f) / 0.5f);
+            // нижняя полоса: таблица обеих команд
+            float b = EaseOut((t - 1.9f) / 0.5f);
             if (b > 0)
             {
-                float colW = Mathf.Min(560, w * 0.42f), y0 = h * 0.72f;
-                StatsColumn(Team.Home, w / 2 - colW - 20, y0, colW, b, mvp);
-                StatsColumn(Team.Away, w / 2 + 20, y0, colW, b, mvp);
+                float colW = Mathf.Min(720 * k, w * 0.43f), y0 = h - h * botH + 22 * k;
+                StatsColumn(Team.Home, w / 2 - colW - 30 * k, y0, colW, b, mvp);
+                StatsColumn(Team.Away, w / 2 + 30 * k, y0, colW, b, mvp);
             }
-            Hint(w, h, hint, a);
+            Txt(new Rect(0, h - 44 * k, w, 34 * k), hint, 21, new Color(0.75f, 0.84f, 0.82f, 0.9f * Mathf.Max(b, 0.3f)), TextAnchor.MiddleCenter, false);
         }
 
         void StatsColumn(Team team, float x, float y, float cw, float a, SimPlayer mvp)
         {
+            float k = K;
             Color tc = team == Team.Home ? Mat.Home : Mat.Away;
-            Shadowed(new Rect(x, y, cw, 26), team == Team.Home ? "СИНИЕ" : "КРАСНЫЕ", statStyle, new Color(tc.r, tc.g, tc.b, a));
-            var hs = new GUIStyle(statStyle) { alignment = TextAnchor.MiddleCenter, fontSize = 14 };
+            float nameW = cw * 0.56f, cell = (cw - nameW) / 4;
+            Fill(new Rect(x, y + 6 * k, 6 * k, 30 * k), A(tc, a));
+            Txt(new Rect(x + 16 * k, y, nameW, 42 * k), team == Team.Home ? "СИНИЕ" : "КРАСНЫЕ", 32, A(Color.white, a), TextAnchor.MiddleLeft);
             string[] heads = { "Г", "П", "С", "О" };
-            for (int i = 0; i < 4; i++) Shadowed(new Rect(x + cw * 0.6f + i * cw * 0.1f, y, cw * 0.1f, 26), heads[i], hs, new Color(0.75f, 0.82f, 0.8f, a));
-            y += 26;
+            for (int i = 0; i < 4; i++) Txt(new Rect(x + nameW + i * cell, y, cell, 42 * k), heads[i], 22, new Color(0.65f, 0.72f, 0.72f, a), TextAnchor.MiddleCenter, false);
+            y += 44 * k;
+            int row = 0;
             foreach (var p in match.Players)
             {
                 if (p.Team != team || p.Dummy) continue;
-                bool star = p == mvp;
-                Color c = star ? new Color(GoldCol.r, GoldCol.g, GoldCol.b, a) : new Color(1, 1, 1, a * (p == match.Local ? 1 : 0.85f));
-                Shadowed(new Rect(x, y, cw * 0.6f, 24), (star ? "★ " : "") + HeroName(p.Hero) + "  ·  " + Who(p), statStyle, c);
-                int[] v = { p.Goals, p.Assists, p.Saves, p.Steals };
-                var vs = new GUIStyle(statStyle) { alignment = TextAnchor.MiddleCenter };
-                for (int i = 0; i < 4; i++) Shadowed(new Rect(x + cw * 0.6f + i * cw * 0.1f, y, cw * 0.1f, 24), v[i].ToString(), vs, c);
-                y += 24;
+                bool star = p == mvp, me = p == match.Local;
+                if (star || me) Plate(new Rect(x, y, cw, 36 * k), star ? new Color(GoldCol.r, GoldCol.g, GoldCol.b, 0.16f * a) : new Color(1, 1, 1, 0.07f * a));
+                else if (row % 2 == 1) Fill(new Rect(x, y, cw, 36 * k), new Color(1, 1, 1, 0.03f * a));
+                Color c = star ? A(GoldCol, a) : new Color(1, 1, 1, a * 0.92f);
+                Txt(new Rect(x + 16 * k, y, nameW, 36 * k), (star ? "★  " : "") + HeroUp(p.Hero), 26, c, TextAnchor.MiddleLeft);
+                Txt(new Rect(x + 16 * k + (star ? 230 : 190) * k, y, nameW, 36 * k), Who(p), 22, Tint(tc, a * 0.9f), TextAnchor.MiddleLeft, false);
+                int[] v = StatVals(p);
+                for (int i = 0; i < 4; i++) Txt(new Rect(x + nameW + i * cell, y, cell, 36 * k), v[i].ToString(), 26, v[i] > 0 ? c : new Color(1, 1, 1, 0.35f * a), TextAnchor.MiddleCenter);
+                y += 38 * k; row++;
             }
-        }
-
-        void Hint(float w, float h, string hint, float a)
-        {
-            Shadowed(new Rect(0, h - 40, w, 30), hint, mid.Small(), new Color(0.8f, 0.9f, 0.86f, a));
         }
     }
 }

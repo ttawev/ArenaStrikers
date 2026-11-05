@@ -560,7 +560,7 @@ namespace Arena.Game
 
         public void Rebuild(Match m)
         { // team colours are baked into a hero view, so rebuild when the line-up changes
-            foreach (var h in heroes) Object.Destroy(h.Root);
+            foreach (var h in heroes) h.Destroy(); // вместе с крюком и верёвкой — иначе брошенный крюк оставался лежать на поле
             heroes.Clear();
             EnsureHeroes(m);
         }

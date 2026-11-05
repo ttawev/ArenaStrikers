@@ -80,7 +80,8 @@ namespace Arena.Sim
         [Header("Выход команд перед матчем")]
         [Tooltip("Показывать выход команд (не в тренировке; офлайн пропускается кнопкой A / Enter)")] public bool intro = true;
         [Tooltip("Выбегают из туннеля и встают в линию, с")] [Range(1, 5)] public float introRun = 2.4f;
-        [Tooltip("Стоят в линию и позируют, с")] [Range(0.5f, 6)] public float introPose = 2.6f;
+        [Tooltip("Стоят в линию: камера проезжает вдоль синих, потом вдоль красных, с")] [Range(1, 8)] public float introPose = 4.2f;
+        [HideInInspector] public int introVer; // версия настроек выхода (старые сохранённые значения переводятся в ArenaGame.Awake)
         [Tooltip("Разбегаются на места разводки, с")] [Range(0.5f, 4)] public float introToPlace = 1.4f;
 
         [Header("Кнопка «дай пас»")]

@@ -88,6 +88,12 @@ namespace Arena.Game
         [Tooltip("Жар: как быстро свечение разгорается и гаснет при суперударе (больше — резче)")] [Range(1, 20)] public float glowRamp = 5f;
         [Tooltip("Мерцание свечения")] [Range(0, 0.6f)] public float glowFlicker = 0.18f;
         [Tooltip("Сила ореола вокруг ярких мест на всём экране")] [Range(0, 3)] public float bloom = 0.8f;
+        [Header("Обводка (toon) — пока отключена в коде (HeroModel: BuildOutline)")]
+        [Tooltip("Контур вокруг героев")] public bool outline = true;
+        [Tooltip("Толщина контура, пикселей (при высоте экрана 1080)")] [Range(0.5f, 8)] public float outlineWidth = 2.5f;
+        [Tooltip("Цвет контура")] public Color outlineColor = new Color(0.04f, 0.05f, 0.1f, 1);
+        [Tooltip("0 — контур своим цветом (тёмный), 1 — в цвет команды")] [Range(0, 1)] public float outlineTeam = 0;
+        [Tooltip("Яркость контура в цвет команды")] [Range(0.2f, 2)] public float outlineTeamBright = 1.1f;
         [Tooltip("Яркость огненного света от героя на землю и плечи")] [Range(0, 6)] public float fireLight = 2.2f;
         [Tooltip("Радиус огненного света, м")] [Range(0.5f, 6)] public float fireLightRange = 2.6f;
         [Tooltip("Искр в секунду от пламени")] [Range(0, 60)] public float embers = 16;
@@ -385,6 +391,7 @@ namespace Arena.Game
                 if (hips != null) hipsRest = Go.transform.InverseTransformPoint(hips.position);
             }
             skinR = skin;
+            // BuildOutline(team); // toon-обводка (HeroModel.Outline.cs) — отложена автором 5.11; вернуть: раскомментировать
             glows = a.Emission != null;
             if (h == Hero.Fire) BuildFireFx(anim);
             if (h == Hero.Wall) BuildFrostFx(anim);
@@ -551,6 +558,7 @@ namespace Arena.Game
         {
             if (dt <= 0 || !Go.activeInHierarchy) return;
             Go.transform.localScale = Vector3.one * (Tune.height * unitScale); // live from the Inspector
+            TickOutline();
             TickFx(dt);
             if (animated)
             {
