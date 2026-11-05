@@ -42,13 +42,14 @@ namespace Arena.Game
         {
             var gp = Gamepad.current; var kb = Keyboard.current;
             Vector2 stick = Vector2.zero;
-            bool kick = false, lob = false, cl = false, cr = false;
+            bool kick = false, lob = false, cl = false, cr = false, call = false;
             if (gp != null)
             {
                 stick = gp.leftStick.ReadValue();
                 var dp = gp.dpad.ReadValue(); if (dp.sqrMagnitude > 0.1f) stick = dp;
                 kick |= gp.buttonSouth.isPressed; lob |= gp.buttonWest.isPressed;
                 cl |= gp.leftShoulder.isPressed; cr |= gp.rightShoulder.isPressed;
+                call |= gp.rightTrigger.ReadValue() > 0.4f || gp.leftTrigger.ReadValue() > 0.4f; // RT / LT — «дай пас»
             }
             if (kb != null)
             {
@@ -57,6 +58,7 @@ namespace Arena.Game
                 if (kx != 0 || ky != 0) stick = new Vector2(kx, ky);
                 kick |= kb.jKey.isPressed || kb.spaceKey.isPressed;
                 lob |= kb.lKey.isPressed || kb.digit4Key.isPressed;
+                call |= kb.qKey.isPressed || kb.eKey.isPressed; // Q / E — «дай пас»
                 if (hero == Hero.Curve) { cl |= kb.uKey.isPressed || kb.digit1Key.isPressed; cr |= kb.iKey.isPressed || kb.digit2Key.isPressed; }
             }
             if (stick.sqrMagnitude > 1) stick.Normalize();
@@ -64,7 +66,7 @@ namespace Arena.Game
             var c = new InputCommand
             {
                 MoveX = f.x, MoveY = f.y, Kick = kick, Lob = lob, CurveLeft = cl, CurveRight = cr,
-                Dash = dashPending, Ability = abilityPending, BallToMe = ballPending,
+                Dash = dashPending, Ability = abilityPending, BallToMe = ballPending, CallPass = call,
             };
             dashPending = abilityPending = ballPending = false;
             return c;

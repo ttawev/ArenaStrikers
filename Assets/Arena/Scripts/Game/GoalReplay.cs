@@ -9,9 +9,10 @@ namespace Arena.Game
 {
     public class GoalReplay
     {
-        class Frame
+        public class Frame
         {
             public float T;
+            public string Banner = ""; public Team BannerTeam; public float Freeze; public int ScoreH, ScoreA; // для хайлайтов (WithState)
             public SimPlayer[] P; public SimBall B;
             public Hook[] HSrc, HCopy; public IceWall[] WSrc, WCopy;
             public SimEvent[] E;
@@ -39,13 +40,29 @@ namespace Arena.Game
         readonly Dictionary<IceWall, IceWall> wallStand = new Dictionary<IceWall, IceWall>();
 
         public bool Active { get; private set; }
+        /// <summary>Хайлайты: не стирать кадры после проигрывания (показываем один момент с нескольких камер).</summary>
+        public bool KeepFrames;
+        /// <summary>Хайлайты: проигрывать и надпись гола, заморозку и счёт — тогда герои празднуют.</summary>
+        public bool WithState;
+        public IReadOnlyList<Frame> Frames => frames;
+        public float FirstT => frames.Count > 0 ? frames[0].T : 0;
+        public float LastT => frames.Count > 0 ? frames[frames.Count - 1].T : 0;
+
+        /// <summary>Копия кадров начиная с момента fromT (сами кадры не меняются, поэтому общие).</summary>
+        public GoalReplay CopyFrom(float fromT)
+        {
+            var r = new GoalReplay();
+            foreach (var f in frames) if (f.T >= fromT) r.frames.Add(f);
+            return r;
+        }
         public bool HasFrames => frames.Count > 1;
 
         /// <summary>Запомнить состояние после шага симуляции (вместе с событиями этого шага).</summary>
         public void Record(Match m, float simTime, float keepSeconds)
         {
             if (Active) return;
-            var f = new Frame { T = simTime, P = new SimPlayer[m.Players.Count], B = (SimBall)Clone(m.Ball), E = m.Events.ToArray() };
+            var f = new Frame { T = simTime, P = new SimPlayer[m.Players.Count], B = (SimBall)Clone(m.Ball), E = m.Events.ToArray(),
+                               Banner = m.Banner, BannerTeam = m.BannerTeam, Freeze = m.Freeze, ScoreH = m.ScoreHome, ScoreA = m.ScoreAway };
             for (int i = 0; i < f.P.Length; i++) f.P[i] = (SimPlayer)Clone(m.Players[i]);
             f.HSrc = m.Hooks.ToArray(); f.HCopy = new Hook[f.HSrc.Length];
             for (int i = 0; i < f.HSrc.Length; i++) f.HCopy[i] = (Hook)Clone(f.HSrc[i]);
@@ -60,7 +77,7 @@ namespace Arena.Game
         public void Clear() { if (!Active) frames.Clear(); }
 
         // ---------- проигрывание ----------
-        Frame saved; List<Hook> savedHooks; List<IceWall> savedWalls; string savedBanner = "";
+        Frame saved; List<Hook> savedHooks; List<IceWall> savedWalls; string savedBanner = ""; Team savedTeam; float savedFreeze; int savedH, savedA;
         float clock, endT, hold; int next;
 
         public bool Begin(Match m, float seconds, float holdEnd)
@@ -69,9 +86,27 @@ namespace Arena.Game
             saved = new Frame { P = new SimPlayer[m.Players.Count], B = (SimBall)Clone(m.Ball) };
             for (int i = 0; i < saved.P.Length; i++) saved.P[i] = (SimPlayer)Clone(m.Players[i]);
             savedHooks = new List<Hook>(m.Hooks); savedWalls = new List<IceWall>(m.Walls);
-            savedBanner = m.Banner; m.Banner = ""; // в повторе ещё не забили: герои не празднуют (HeroView смотрит на Banner)
             endT = frames[frames.Count - 1].T;
-            clock = Math.Max(frames[0].T, endT - seconds);
+            return Start(m, Math.Max(frames[0].T, endT - seconds), endT, holdEnd);
+        }
+
+        /// <summary>Проиграть кусок записи с fromT по toT (время симуляции).</summary>
+        public bool BeginRange(Match m, float fromT, float toT, float holdEnd)
+        {
+            if (Active || frames.Count < 2 || frames[0].P.Length != m.Players.Count) return false;
+            saved = new Frame { P = new SimPlayer[m.Players.Count], B = (SimBall)Clone(m.Ball) };
+            for (int i = 0; i < saved.P.Length; i++) saved.P[i] = (SimPlayer)Clone(m.Players[i]);
+            savedHooks = new List<Hook>(m.Hooks); savedWalls = new List<IceWall>(m.Walls);
+            endT = Math.Min(toT, frames[frames.Count - 1].T);
+            return Start(m, Math.Max(frames[0].T, fromT), endT, holdEnd);
+        }
+
+        bool Start(Match m, float from, float to, float holdEnd)
+        {
+            savedBanner = m.Banner; savedTeam = m.BannerTeam; savedFreeze = m.Freeze; savedH = m.ScoreHome; savedA = m.ScoreAway;
+            if (!WithState) m.Banner = ""; // в повторе ещё не забили: герои не празднуют (HeroView смотрит на Banner)
+            endT = to;
+            clock = from;
             next = 0;
             while (next < frames.Count - 1 && frames[next + 1].T <= clock) next++;
             hold = holdEnd;
@@ -108,14 +143,17 @@ namespace Arena.Game
             m.Hooks.Clear(); m.Hooks.AddRange(savedHooks);
             m.Walls.Clear(); m.Walls.AddRange(savedWalls);
             m.Banner = savedBanner;
+            if (WithState) { m.BannerTeam = savedTeam; m.Freeze = savedFreeze; m.ScoreHome = savedH; m.ScoreAway = savedA; }
             Active = false; saved = null;
-            frames.Clear(); hookStand.Clear(); wallStand.Clear();
+            if (!KeepFrames) frames.Clear();
+            hookStand.Clear(); wallStand.Clear();
         }
 
         void Apply(Match m, Frame f)
         {
             for (int i = 0; i < f.P.Length; i++) CopyInto(f.P[i], m.Players[i]);
             CopyInto(f.B, m.Ball);
+            if (WithState) { m.Banner = f.Banner; m.BannerTeam = f.BannerTeam; m.Freeze = f.Freeze; m.ScoreHome = f.ScoreH; m.ScoreAway = f.ScoreA; }
             // у каждого крюка/разлома в повторе — один постоянный объект, чтобы эффекты не считали его каждый кадр новым
             m.Hooks.Clear();
             for (int i = 0; i < f.HSrc.Length; i++)

@@ -73,7 +73,7 @@ namespace Arena.Game
         public const ushort DirectPort = 7777;
         /// <summary>Версия сетевой игры. УВЕЛИЧИВАТЬ при любом изменении сети (сообщения, снимок) или правил матча —
         /// игроки и сервер с разными версиями не соединятся (друг увидит «обнови игру»).</summary>
-        public const int NetVersion = 2;
+        public const int NetVersion = 4; // 3: «Найти матч» — комнаты на сервере (ServerHub); 4: «дай пас», золотой гол, выход команд, MVP
         public bool Direct { get; private set; }
         public string DirectIp { get; private set; } = "";
 
@@ -190,11 +190,20 @@ namespace Arena.Game
         float connectT;
 
         /// <summary>Главный в комнате на выделенном сервере — тот, кто вошёл раньше всех (наименьшее место).</summary>
+        // «Найти матч» (сервер присылает в составе): номер комнаты, место главного, секунд до автостарта, вместимость
+        public int RoomNo, LeaderSlot = -1, Capacity = 8;
+        public float AutoStart = -1;
+        /// <summary>Адрес нашего сервера для «Найти матч» (можно поменять в меню, поле «Сервер»).</summary>
+        public const string DefaultServer = "77.235.18.42:10184";
+        public Hero MyHero => myHero;
+        public Team MyTeam => myTeam;
+
         public bool IsLeader
         {
             get
             {
                 if (!ViaServer || Roster.Count == 0) return false;
+                if (LeaderSlot >= 0) return LeaderSlot == MySlot; // сервер сам говорит, кто главный
                 int min = 99; foreach (var x in Roster) min = Math.Min(min, x.Slot);
                 return min == MySlot;
             }
@@ -238,7 +247,7 @@ namespace Arena.Game
                 }
 #endif
                 Code = a + (port != DirectPort ? ":" + port : "");
-                Status = "Подключаюсь к серверу " + Code + "…";
+                Status = "Ищу матч…";
                 EnsureNetworkManager();
                 var ut = OwnTransport();
                 ut.SetConnectionData(ip, port);
@@ -446,6 +455,17 @@ namespace Arena.Game
                 Roster.Add(s);
                 if (s.ClientId == nm.LocalClientId) MySlot = slot;
             }
+            if (!ViaServer) return;
+            try
+            {   // версия 3: комната на сервере
+                r.ReadValueSafe(out ushort no); r.ReadValueSafe(out sbyte leader); r.ReadValueSafe(out short auto); r.ReadValueSafe(out byte cap);
+                RoomNo = no; LeaderSlot = leader; AutoStart = auto; Capacity = cap > 0 ? cap : 8;
+                Code = "МАТЧ #" + RoomNo + " · " + Roster.Count + "/" + Capacity;
+            }
+            catch { }
+            // герой и команду назначает сервер (команда — где меньше людей, герой — не повторяется в команде)
+            var me = Roster.Find(x => x.ClientId == nm.LocalClientId);
+            if (me != null) { myHero = me.Hero; myTeam = me.Team; }
         }
 
         // ---------- начало матча ----------
@@ -505,7 +525,7 @@ namespace Arena.Game
             var c = t.C;
             w.WriteValueSafe(t.Seq); w.WriteValueSafe(Mathf.FloatToHalf(c.MoveX)); w.WriteValueSafe(Mathf.FloatToHalf(c.MoveY));
             w.WriteValueSafe((byte)((c.Kick ? 1 : 0) | (c.Lob ? 2 : 0) | (c.CurveLeft ? 4 : 0) | (c.CurveRight ? 8 : 0)
-                                  | (c.Dash ? 16 : 0) | (c.Ability ? 32 : 0) | (c.BallToMe ? 64 : 0)));
+                                  | (c.Dash ? 16 : 0) | (c.Ability ? 32 : 0) | (c.BallToMe ? 64 : 0) | (c.CallPass ? 128 : 0)));
         }
 
         /// <summary>Друг, каждый кадр после ClientTick: свои шаги ввода (с номерами) — хосту, и свой герой — заранее, по предсказанию.</summary>
@@ -559,7 +579,7 @@ namespace Arena.Game
 
             // 4. показать своего героя по предсказанию (сейчас), а не по снимку (в прошлом)
             errOff *= Mathf.Exp(-dt * 10);
-            if (pred == null || !PredictOn || m.Phase != MatchPhase.Playing) return;
+            if (pred == null || !PredictOn || m.Phase != MatchPhase.Playing || m.Intro > 0) return;
             float px = me.X, py = me.Y;
             me.X = pred.X + errOff.x; me.Y = pred.Y + errOff.y; me.Vx = pred.Vx; me.Vy = pred.Vy; me.Fx = pred.Fx; me.Fy = pred.Fy;
             me.DashT = pred.DashT; me.DashCd = pred.DashCd;
@@ -581,7 +601,7 @@ namespace Arena.Game
                 {
                     MoveX = Mathf.HalfToFloat(mx), MoveY = Mathf.HalfToFloat(my),
                     Kick = (b & 1) != 0, Lob = (b & 2) != 0, CurveLeft = (b & 4) != 0, CurveRight = (b & 8) != 0,
-                    Dash = (b & 16) != 0, Ability = (b & 32) != 0, BallToMe = (b & 64) != 0,
+                    Dash = (b & 16) != 0, Ability = (b & 32) != 0, BallToMe = (b & 64) != 0, CallPass = (b & 128) != 0,
                 };
                 inQ[slot].Enqueue(new TickIn { Seq = seq, C = c }); queued[slot] = seq;
             }
@@ -731,6 +751,7 @@ namespace Arena.Game
         /// <summary>Хост: раз в секунду мерит пинг каждого друга и рассылает состав с пингами.</summary>
         public void Tick(float dt)
         {
+            if (AutoStart > 0) AutoStart = Mathf.Max(0, AutoStart - dt);
             if (connectT > 0 && State == Phase.Connecting) { connectT -= dt; if (connectT <= 0) Fail("Сервер не отвечает — проверь адрес и что сервер запущен"); }
             if (!IsHost || State == Phase.Connecting || State == Phase.Failed) return;
             pingT -= dt; if (pingT > 0) return; pingT = 1;

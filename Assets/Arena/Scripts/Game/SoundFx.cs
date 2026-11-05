@@ -183,6 +183,7 @@ namespace Arena.Game
             for (int k = 0; k < f.Length; k++) Ring(d, new[] { f[k], f[k] * 2 }, new[] { 1f, 0.25f }, new[] { 38f, 60f }, k * each);
             return Clip(name, d, gain);
         }
+        public static AudioClip CallPing() => Blips("call", new[] { 1480f, 1975f }, 0.065f, 0.5f); // «дай пас»
         public static AudioClip UiMove() => Blips("ui_move", new[] { 1250f }, 0.06f, 0.35f);
         public static AudioClip UiConfirm() => Blips("ui_ok", new[] { 880f, 1320f }, 0.07f, 0.45f);
         public static AudioClip UiBack() => Blips("ui_back", new[] { 1100f, 740f }, 0.07f, 0.4f);

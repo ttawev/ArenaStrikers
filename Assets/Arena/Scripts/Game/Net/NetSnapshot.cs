@@ -9,9 +9,10 @@ namespace Arena.Game
 {
     public class Snap
     {
-        public const int PF = 26; // чисел на героя
-        public float T, Clock, Freeze;
-        public byte ScoreH, ScoreA, Phase, BannerTeam; public bool Banner;
+        public const int PF = 27; // чисел на героя
+        public float T, Clock, Freeze, Intro;
+        public byte ScoreH, ScoreA, Phase, BannerTeam; public bool Banner, Golden;
+        public bool HasStats; public byte[] Stats = new byte[8 * 4]; // в конце матча: голы, передачи, сейвы, отборы каждого
         public uint[] Acks = new uint[8]; // по месту: последний выполненный хостом тик ввода (для предсказания у друга)
         public int N; public float[] P = new float[PF * 8]; public byte[] PFlags = new byte[8]; public sbyte[] PCurv = new sbyte[8];
         public float[] B = new float[11]; public sbyte BOwner, BLast, BFireBy; public bool BHook;
@@ -27,6 +28,7 @@ namespace Arena.Game
         static void H(FastBufferWriter w, float v) => w.WriteValueSafe(Mathf.FloatToHalf(v));
         static float H(FastBufferReader r) { r.ReadValueSafe(out ushort u); return Mathf.HalfToFloat(u); }
         static float F(FastBufferReader r) { r.ReadValueSafe(out float f); return f; }
+        static byte ToB(int v) => (byte)Mathf.Clamp(v, 0, 255);
         static sbyte Idx(Match m, SimPlayer p) => p == null ? (sbyte)-1 : (sbyte)m.Players.IndexOf(p);
 
         // ---------- хост: запись ----------
@@ -36,6 +38,13 @@ namespace Arena.Game
             for (int i = 0; i < 8; i++) w.WriteValueSafe(acks != null && i < acks.Length ? acks[i] : 0u);
             w.WriteValueSafe((byte)m.ScoreHome); w.WriteValueSafe((byte)m.ScoreAway); w.WriteValueSafe((byte)m.Phase);
             w.WriteValueSafe(m.Banner != ""); w.WriteValueSafe((byte)m.BannerTeam);
+            w.WriteValueSafe(m.Golden); H(w, m.Intro);
+            bool stats = m.Phase == MatchPhase.Ended; w.WriteValueSafe(stats);
+            if (stats)
+            {
+                int ns = Mathf.Min(m.Players.Count, 8); w.WriteValueSafe((byte)ns);
+                for (int i = 0; i < ns; i++) { var p = m.Players[i]; w.WriteValueSafe(ToB(p.Goals)); w.WriteValueSafe(ToB(p.Assists)); w.WriteValueSafe(ToB(p.Saves)); w.WriteValueSafe(ToB(p.Steals)); }
+            }
             w.WriteValueSafe((byte)m.Players.Count);
             foreach (var p in m.Players)
             {
@@ -45,7 +54,7 @@ namespace Arena.Game
                 H(w, p.Charge); H(w, p.LobCharge); H(w, p.CurveCharge);
                 H(w, p.HookCd); H(w, p.FireCd); H(w, p.FireT); H(w, p.TpCd); H(w, p.TpBackT);
                 w.WriteValueSafe(p.TpFx); w.WriteValueSafe(p.TpFy);
-                H(w, p.CurveCd); H(w, p.InvisT); H(w, p.InvisCd); H(w, p.WallCd);
+                H(w, p.CurveCd); H(w, p.InvisT); H(w, p.InvisCd); H(w, p.WallCd); H(w, p.CallT);
                 w.WriteValueSafe((byte)((p.Charging ? 1 : 0) | (p.Lobbing ? 2 : 0))); w.WriteValueSafe((sbyte)p.Curving);
             }
             var b = m.Ball;
@@ -92,6 +101,13 @@ namespace Arena.Game
             for (int i = 0; i < 8; i++) r.ReadValueSafe(out s.Acks[i]);
             r.ReadValueSafe(out s.ScoreH); r.ReadValueSafe(out s.ScoreA); r.ReadValueSafe(out s.Phase);
             r.ReadValueSafe(out s.Banner); r.ReadValueSafe(out s.BannerTeam);
+            r.ReadValueSafe(out s.Golden); s.Intro = H(r);
+            r.ReadValueSafe(out s.HasStats);
+            if (s.HasStats)
+            {
+                r.ReadValueSafe(out byte ns);
+                for (int i = 0; i < ns * 4; i++) { r.ReadValueSafe(out byte v); if (i < s.Stats.Length) s.Stats[i] = v; }
+            }
             r.ReadValueSafe(out byte n); s.N = Mathf.Min(n, 8);
             for (int i = 0; i < n; i++)
             {
@@ -99,7 +115,7 @@ namespace Arena.Game
                 P[o] = F(r); P[o + 1] = F(r);
                 for (int k = 2; k <= 19; k++) P[o + k] = H(r);
                 P[o + 20] = F(r); P[o + 21] = F(r);
-                for (int k = 22; k <= 25; k++) P[o + k] = H(r);
+                for (int k = 22; k <= 26; k++) P[o + k] = H(r);
                 r.ReadValueSafe(out byte fl); r.ReadValueSafe(out sbyte cv);
                 if (i < 8) { s.PFlags[i] = fl; s.PCurv[i] = cv; }
             }
@@ -153,6 +169,10 @@ namespace Arena.Game
             m.ScoreHome = b.ScoreH; m.ScoreAway = b.ScoreA; m.Phase = (MatchPhase)b.Phase;
             m.BannerTeam = (Team)b.BannerTeam;
             m.Banner = !b.Banner ? "" : m.Local != null && m.BannerTeam == m.Local.Team ? "ГОЛ!" : "ПРОПУСТИЛ"; // надпись — со стороны этого игрока
+            m.Golden = b.Golden; m.Intro = b.Intro;
+            if (b.HasStats)
+                for (int i = 0; i < b.N && i < m.Players.Count; i++)
+                { var p = m.Players[i]; p.Goals = b.Stats[i * 4]; p.Assists = b.Stats[i * 4 + 1]; p.Saves = b.Stats[i * 4 + 2]; p.Steals = b.Stats[i * 4 + 3]; }
             for (int i = 0; i < b.N && i < m.Players.Count; i++) ApplyPlayer(m.Players[i], a, b, i, t);
             ApplyRest(m, a, b, t);
         }
@@ -171,7 +191,7 @@ namespace Arena.Game
                 p.DashT = B[o + 6]; p.DashCd = B[o + 7]; p.Stun = B[o + 8]; p.KickCd = B[o + 9]; p.Flash = B[o + 10]; p.GrabCd = B[o + 11];
                 p.Charge = B[o + 12]; p.LobCharge = B[o + 13]; p.CurveCharge = B[o + 14];
                 p.HookCd = B[o + 15]; p.FireCd = B[o + 16]; p.FireT = B[o + 17]; p.TpCd = B[o + 18]; p.TpBackT = B[o + 19];
-                p.TpFx = B[o + 20]; p.TpFy = B[o + 21]; p.CurveCd = B[o + 22]; p.InvisT = B[o + 23]; p.InvisCd = B[o + 24]; p.WallCd = B[o + 25];
+                p.TpFx = B[o + 20]; p.TpFy = B[o + 21]; p.CurveCd = B[o + 22]; p.InvisT = B[o + 23]; p.InvisCd = B[o + 24]; p.WallCd = B[o + 25]; p.CallT = B[o + 26];
                 p.Charging = (b.PFlags[i] & 1) != 0; p.Lobbing = (b.PFlags[i] & 2) != 0; p.Curving = b.PCurv[i];
             }
         }

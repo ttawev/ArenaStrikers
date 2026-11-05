@@ -1,0 +1,143 @@
+// Кинокамера для съёмки клипов: «трансляция» (сбоку и ниже обычной), «за мячом» (низко, по ходу мяча),
+// «облёт» (кружит вокруг мяча или забившего) и «авто» — режиссёр сам переключает планы.
+// Включается клавишей C / правым стиком (ArenaGame.ClipKeys), настройки — Inspector → Arena → «Кинокамера».
+using Arena.Sim;
+using UnityEngine;
+
+namespace Arena.Game
+{
+    [System.Serializable]
+    public class CineTuning
+    {
+        [Tooltip("Угол обзора кинокамеры (меньше — «длиннофокусный», киношный кадр)")] [Range(20, 60)] public float fov = 34;
+        [Tooltip("Плавность движения камеры (больше — резче)")] [Range(0.5f, 8)] public float smooth = 2.6f;
+        [Tooltip("Скрывать интерфейс, пока включена кинокамера (надпись «ГОЛ!» остаётся)")] public bool hideHud = true;
+        [Header("Трансляция")]
+        [Tooltip("Высота камеры, м")] [Range(2, 15)] public float broadcastHeight = 6f;
+        [Tooltip("Насколько камера отступает к ближней трибуне, м")] [Range(3, 15)] public float broadcastBack = 8f;
+        [Tooltip("Насколько камера опережает мяч по ходу, с")] [Range(0, 1)] public float broadcastLead = 0.35f;
+        [Header("За мячом")]
+        [Tooltip("Высота камеры, м")] [Range(0.5f, 5)] public float chaseHeight = 1.4f;
+        [Tooltip("Расстояние до мяча, м")] [Range(1.5f, 10)] public float chaseDistance = 4f;
+        [Tooltip("Куда смотрит камера: метров впереди мяча")] [Range(0, 10)] public float chaseAhead = 5f;
+        [Header("Облёт")]
+        [Tooltip("Высота камеры, м")] [Range(0.5f, 6)] public float orbitHeight = 1.8f;
+        [Tooltip("Радиус облёта, м")] [Range(2, 12)] public float orbitDistance = 5f;
+        [Tooltip("Скорость облёта, градусов в секунду")] [Range(0, 90)] public float orbitSpeed = 20f;
+        [Tooltip("С какого расстояния до ворот (м) камера держит в кадре и мяч, и ворота")] [Range(2, 15)] public float goalFrameDist = 7f;
+        [Header("Авто-режиссёр")]
+        [Tooltip("Минимум секунд на один план")] [Range(0.5f, 6)] public float minShot = 2.2f;
+        [Tooltip("Скорость мяча (единиц поля в секунду), с которой удар снимается «за мячом»")] [Range(400, 2500)] public float chaseSpeed = 1000;
+        [Header("Замедление ударов (только офлайн, пока включена кинокамера)")]
+        public bool slowKicks = true;
+        [Tooltip("Сила удара, с которой включается замедление (0,5 — от половины заряда, 1 — сильный)")] [Range(0.3f, 1.5f)] public float slowMinPower = 0.8f;
+        [Tooltip("Скорость игры в замедлении")] [Range(0.1f, 1)] public float slowAmount = 0.35f;
+        [Tooltip("Сколько держать замедление, с")] [Range(0, 2)] public float slowTime = 0.5f;
+    }
+
+    public class CineCam
+    {
+        public enum Shot { Broadcast, Chase, Orbit }
+
+        Vector3 pos, look, dir = Vector3.right, vel, prevBall;
+        float orbitAng = -90, shotT;
+        bool init, hasPrev;
+        Shot cur;
+
+        /// <summary>Начать с текущего положения камеры — чтобы включение было плавным, без рывка.</summary>
+        public void Seed(Vector3 p, Quaternion r) { pos = p; look = p + r * Vector3.forward * 10; init = true; shotT = 0; hasPrev = false; }
+
+        /// <summary>Склейка: следующий кадр сразу на новом месте, без пролёта.</summary>
+        public void Cut() { init = false; hasPrev = false; vel = Vector3.zero; shotT = 0; }
+
+        /// <param name="fixedShot">null — авто-режиссёр сам выбирает план</param>
+        /// <param name="hero">в центре внимания (забивший, пока празднует) или null</param>
+        public void Tick(Match m, CineTuning s, Shot? fixedShot, SimPlayer hero, bool replay, float dt, out Vector3 camPos, out Quaternion camRot)
+        {
+            var b = m.Ball;
+            Vector3 ball = W.Pos(b.X, b.Y, Mathf.Min(b.Z, 300));
+            // скорость мяча — по смещению (так работает и в повторе, и у друга онлайн)
+            if (dt > 0)
+            {
+                Vector3 raw = hasPrev ? (ball - prevBall) / dt : Vector3.zero; raw.y = 0;
+                if (raw.magnitude > 60) raw = Vector3.zero; // мяч перенесли (гол, начало) — не скорость
+                vel = Vector3.Lerp(vel, raw, 1 - Mathf.Exp(-10 * dt));
+            }
+            prevBall = ball; hasPrev = true;
+            float speed = vel.magnitude / W.S;
+            // направление «по ходу»: мяч катится — по мячу, иначе — куда смотрит владелец
+            Vector3 want = Vector3.zero;
+            if (speed > 250) want = vel.normalized;
+            else if (b.Owner != null) want = new Vector3(-b.Owner.Fy, 0, -b.Owner.Fx);
+            if (want.sqrMagnitude > 0.01f)
+            {
+                var d = Vector3.Slerp(dir, want.normalized, 1 - Mathf.Exp(-2.5f * dt));
+                if (d.sqrMagnitude > 0.01f) dir = d.normalized;
+            }
+
+            // какой план
+            shotT += dt;
+            Shot next = fixedShot ?? (hero != null ? Shot.Orbit : replay ? Shot.Chase : speed > s.chaseSpeed && b.Owner == null ? Shot.Chase : Shot.Broadcast);
+            if (next != cur && (fixedShot.HasValue || hero != null || shotT >= s.minShot))
+            {
+                if (next == Shot.Orbit)
+                {   // облёт начинается оттуда, где камера сейчас
+                    Vector3 c0 = hero != null ? W.Pos(hero.X, hero.Y) : ball;
+                    orbitAng = Mathf.Atan2(pos.z - c0.z, pos.x - c0.x) * Mathf.Rad2Deg;
+                }
+                cur = next; shotT = 0;
+            }
+
+            float hl = Field.FH / 2 * W.S, hw = Field.FW / 2 * W.S;
+            // у ворот: мяч летит к воротам ближе ~7 м — в кадре должны быть и мяч, и ворота
+            Vector3 goalA = W.Pos(Field.FW / 2, 0), goalB = W.Pos(Field.FW / 2, Field.FH);
+            Vector3 gate = (ball - goalA).sqrMagnitude < (ball - goalB).sqrMagnitude ? goalA : goalB;
+            Vector3 toGate = gate - new Vector3(ball.x, 0, ball.z);
+            float gd = toGate.magnitude;
+            bool heading = speed < 250 || Vector3.Dot(vel, toGate) > 0;
+            float nearGoal = heading ? Mathf.Clamp01((s.goalFrameDist - gd) / (s.goalFrameDist * 0.6f)) : 0;
+            Vector3 tp, tl;
+            switch (cur)
+            {
+                case Shot.Chase:
+                    tp = ball - dir * s.chaseDistance; tp.y = s.chaseHeight + ball.y * 0.3f;
+                    tl = ball + dir * s.chaseAhead; tl.y = 0.5f + ball.y * 0.5f;
+                    tl = Vector3.Lerp(tl, Vector3.Lerp(ball, gate, 0.55f) + Vector3.up * 0.6f, nearGoal); // у ворот смотрим между мячом и воротами
+                    tp.z = Mathf.Clamp(tp.z, -hw - 0.3f, hw + 0.3f);
+                    break;
+                case Shot.Orbit:
+                {
+                    orbitAng += s.orbitSpeed * dt;
+                    Vector3 c = hero != null ? W.Pos(hero.X, hero.Y) : new Vector3(ball.x, 0, ball.z);
+                    float a = orbitAng * Mathf.Deg2Rad;
+                    tp = c + new Vector3(Mathf.Cos(a), 0, Mathf.Sin(a)) * s.orbitDistance; tp.y = s.orbitHeight;
+                    tl = c + Vector3.up * 0.9f;
+                    tp.z = Mathf.Clamp(tp.z, -hw - 0.3f, hw + 0.3f);
+                    break;
+                }
+                default: // трансляция: сбоку с ближней трибуны, чуть впереди мяча
+                {
+                    Vector3 f = ball + vel * s.broadcastLead * (1 - nearGoal); f.y = 0;
+                    f = Vector3.Lerp(f, Vector3.Lerp(new Vector3(ball.x, 0, ball.z), gate, 0.4f), nearGoal); // мяч и ворота вместе
+                    f.x = Mathf.Clamp(f.x, -hl + 3, hl - 3);
+                    f.z = Mathf.Clamp(f.z, -hw, hw);
+                    tp = new Vector3(f.x, s.broadcastHeight, Mathf.Max(f.z - s.broadcastBack, -hw - 4.5f));
+                    tl = f + Vector3.up * 0.4f;
+                    break;
+                }
+            }
+            tp.x = Mathf.Clamp(tp.x, -hl - 0.3f, hl + 0.3f);
+
+            if (!init)
+            {
+                if (cur == Shot.Orbit) { orbitAng = -90; } // после склейки облёт начинается со стороны ближней трибуны
+                pos = tp; look = tl; init = true;
+            }
+            pos = Vector3.Lerp(pos, tp, 1 - Mathf.Exp(-s.smooth * dt));
+            look = Vector3.Lerp(look, tl, 1 - Mathf.Exp(-s.smooth * 1.8f * dt));
+            camPos = pos;
+            Vector3 fwd = look - pos;
+            camRot = fwd.sqrMagnitude > 0.0001f ? Quaternion.LookRotation(fwd, Vector3.up) : Quaternion.identity;
+        }
+    }
+}

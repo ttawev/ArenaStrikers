@@ -13,6 +13,7 @@ namespace Arena.Game
         readonly GameObject[] hats = new GameObject[6];
         Renderer[] rends; Material[] origMats; Material ghostMat; bool ghosted; float ghostAlpha = -1;
         readonly GameObject arcObj, fireRing, rope, hookHead, tpMark, youMark;
+        readonly GameObject callMark, callWave; readonly Material callWaveMat; float callPop, mvpTurn; // «дай пас» и поворот MVP к камере
         readonly Mesh arcMesh;
         float arcShown = -1;
         readonly Team team; HeroModel model; int modelHero = -1;
@@ -109,6 +110,15 @@ namespace Arena.Game
             tpMark = Shapes.MeshObj(Shapes.Ring((Field.R - 6) * S, (Field.R + 2) * S), parent, Mat.Clear(new Color(0.56f, 0.85f, 1f, 0.8f), true), name + "_tpMark");
             youMark = Shapes.MeshObj(Shapes.Cone(8 * S, 16 * S, 4), Root.transform, Mat.Glow(Mat.Hex("#fff3c4")), "youMark");
             youMark.transform.localRotation = Quaternion.Euler(180, 0, 0);
+            // «дай пас»: восклицательный знак над головой и волна по земле (видят только свои)
+            callMark = new GameObject("callMark"); callMark.transform.SetParent(Root.transform, false);
+            var callCol = Mat.Glow(Mat.Hex("#ffe14d"));
+            Shapes.Prim(PrimitiveType.Capsule, callMark.transform, V(0, 14, 0), V(9, 11, 9), callCol, "bar");
+            Shapes.Prim(PrimitiveType.Sphere, callMark.transform, V(0, -6, 0), V(10, 10, 10), callCol, "dot");
+            callWaveMat = Mat.Clear(new Color(1f, 0.88f, 0.3f, 0.7f), true);
+            callWave = Shapes.MeshObj(Shapes.Ring((Field.R + 2) * S, (Field.R + 9) * S), Root.transform, callWaveMat, "callWave");
+            callWave.transform.localPosition = V(0, 1.8f, 0);
+            callMark.SetActive(false); callWave.SetActive(false);
             rope.SetActive(false); hookHead.SetActive(false); tpMark.SetActive(false); youMark.SetActive(false);
         }
 
@@ -162,7 +172,10 @@ namespace Arena.Game
             {
                 if (m.ScoreHome != m.ScoreAway && m.Mode != GameMode.Training)
                     react = (p.Team == Team.Home) == (m.ScoreHome > m.ScoreAway) ? HeroAnim.Celebrate : HeroAnim.Defeated;
+                if (m.Mode != GameMode.Training && m.Mvp() == p) react = HeroAnim.Celebrate; // лучший игрок матча празднует, даже если проиграл
             }
+            else if (m.Intro > 0 && m.IntroStage == 1 && m.IntroStageTime > 0.25f)
+                react = HeroAnim.Celebrate; // выход команд: стоят в линию — каждый в своей позе
             else if (m.Freeze > 0 && m.Banner != "" && m.Mode != GameMode.Training && !p.Dummy)
                 react = p.Team == m.BannerTeam ? HeroAnim.Celebrate : HeroAnim.Sad;
             if (react != null)
@@ -265,7 +278,10 @@ namespace Arena.Game
         {
             var tr = Root.transform;
             tr.position = W.Pos(p.X, p.Y);
-            tr.rotation = W.Yaw(p.Fx, p.Fy);
+            // конец матча: лучший игрок плавно разворачивается к камере
+            bool mvp = m.Phase == MatchPhase.Ended && m.Mode != GameMode.Training && m.Mvp() == p;
+            mvpTurn = mvp ? Mathf.MoveTowards(mvpTurn, 1, Time.unscaledDeltaTime * 1.5f) : 0;
+            tr.rotation = mvpTurn > 0 ? Quaternion.Slerp(W.Yaw(p.Fx, p.Fy), W.Yaw(1, 0), Mathf.SmoothStep(0, 1, mvpTurn)) : W.Yaw(p.Fx, p.Fy);
             if (modelHero != (int)p.Hero) SwapModel(p.Hero);
             for (int i = 0; i < hats.Length; i++) hats[i].SetActive(i == (int)p.Hero);
             // invisible Тень: teammates see a ghost, opponents only a faint shimmer
@@ -332,6 +348,23 @@ namespace Arena.Game
 
             youMark.SetActive(showYouMark);
             if (showYouMark) { youMark.transform.localPosition = V(0, 150 + Mathf.Sin(t * 5) * 4, 0); }
+
+            // «дай пас»: метку видят свои (соперникам незачем знать, кому сейчас отдадут)
+            bool call = p.CallT > 0 && m.Local != null && p.Team == m.Local.Team && m.Phase == MatchPhase.Playing;
+            callMark.SetActive(call); callWave.SetActive(call);
+            if (call)
+            {
+                callPop = Mathf.Min(1, callPop + Time.unscaledDeltaTime * 6);
+                float pop = 1 + 0.6f * Mathf.Sin(callPop * Mathf.PI) * (1 - callPop * 0.5f);
+                float fade = Mathf.Clamp01(p.CallT / 0.3f);
+                callMark.transform.localPosition = V(0, (showYouMark ? 182 : 158) + Mathf.Sin(t * 9) * 5, 0);
+                callMark.transform.localScale = Vector3.one * pop * (0.6f + 0.4f * fade);
+                callMark.transform.rotation = Quaternion.Euler(0, t * 120, 0);
+                float w = (t * 1.8f) % 1f; // волна расходится от героя раз в ~0,55 с
+                callWave.transform.localScale = new Vector3(1 + w * 1.6f, 1, 1 + w * 1.6f);
+                callWaveMat.SetColor("_BaseColor", new Color(1f, 0.88f, 0.3f, 0.75f * (1 - w) * fade));
+            }
+            else callPop = 0;
         }
     }
 }

@@ -21,6 +21,17 @@ namespace Arena.Sim
         static float Fwd(SimPlayer b) => b.Team == Team.Home ? -1 : 1;               // куда «вперёд» по y
 
         /// <summary>Мяч, пущенный из позиции b по направлению (ax, ay), летит в створ СВОИХ ворот (с запасом), ближе reach.</summary>
+        static readonly float[] TackleAngles = { 0, 0.22f, -0.22f, 0.4f, -0.4f, 0.55f, -0.55f };
+
+        /// <summary>Мяч, выбитый из точки (x, y) в направлении (ax, ay), летит в створ ворот команды b?</summary>
+        bool KnockToOwnGoal(SimPlayer b, float x, float y, float ax, float ay, float margin = 120)
+        {
+            float ownY = b.Team == Team.Home ? FH : 0;
+            if (b.Team == Team.Home ? ay <= 0.05f : ay >= -0.05f) return false;
+            float t = (ownY - y) / ay, xh = x + ax * t;
+            return xh > GX1 - margin && xh < GX2 + margin;
+        }
+
         bool AimsAtOwnGoal(SimPlayer b, float ax, float ay, float reach = 2600, float margin = 170)
         {
             float ownY = b.Team == Team.Home ? FH : 0;
@@ -280,14 +291,21 @@ namespace Arena.Sim
                 if (me.t < foeT + 0.15f) { tx = me.x; ty = me.y; urgent = true; }
                 else { tx = gx + (ball.X - gx) * 0.35f; ty = YAt(M.Clamp(distGoal * 0.25f, 60, 150)); }
             }
-            else if (ball.Owner != null && ball.Owner.Team != b.Team && distGoal < 520)
-            {   // соперник с мячом близко: сократить угол, а вплотную — в ноги
-                float dB = M.Len(ball.X - b.X, ball.Y - b.Y);
-                if (dB < 110 && KeeperZone(b, ball.X, ball.Y)) { tx = ball.X; ty = ball.Y; urgent = true; }
+            else if (ball.Owner != null && ball.Owner.Team != b.Team && distGoal < T.keeperRushDist)
+            {   // соперник с мячом идёт на ворота: выйти навстречу (сократить угол), рядом — выбить мяч рывком из ног.
+                // От вратаря мяч отлетает от ворот, так что рывок здесь безопасен.
+                var c = ball.Owner;
+                float px = c.X + c.Vx * 0.1f, py = c.Y + c.Vy * 0.1f;
+                float dB = M.Len(px - b.X, py - b.Y);
+                bool between = Dep(b.Y) < Dep(c.Y) + 10;
+                if (between && dB > 40 && dB < T.keeperTackle && b.DashCd <= 0 && c.Stun <= 0 && Rand() < 0.35f + D.Dash * 0.5f)
+                { TryDash(b, px - b.X, py - b.Y); tx = px; ty = py; urgent = true; }
+                else if (dB < 110 && KeeperZone(b, ball.X, ball.Y)) { tx = ball.X; ty = ball.Y; urgent = true; }
                 else
-                {
-                    var d = M.Norm(ball.X - gx, ball.Y - ownY); float r = M.Clamp(distGoal * 0.3f, 60, 170);
-                    tx = gx + d.x * r; ty = ownY + d.y * r;
+                {   // чем ближе соперник, тем дальше выходим (но не дальше штрафной)
+                    var d = M.Norm(ball.X - gx, ball.Y - ownY);
+                    float r = M.Clamp(distGoal * 0.45f, 60, Math.Min(300, distGoal - 90));
+                    tx = gx + d.x * r; ty = ownY + d.y * r; urgent = distGoal < 520;
                 }
             }
             else if (distGoal > 950)
@@ -406,10 +424,11 @@ namespace Arena.Sim
             if (b.FireT > 0 || P.WantKick) return;
 
             // ---- пас: оцениваем каждого партнёра ----
-            bool found = false, bestLob = false; float bsc = -9, bProg = 0, bmx = 0, bmy = 0, bmd = 0;
+            bool found = false, bestLob = false, bCall = false; float bsc = -9, bProg = 0, bmx = 0, bmy = 0, bmd = 0;
             foreach (var m in team)
             {
                 if (m.Stun > 0) continue;
+                bool called = m.CallT > 0; // партнёр жмёт «дай пас»
                 float mx = M.Clamp(m.X + m.Vx * 0.35f, R, FW - R), my = M.Clamp(m.Y + m.Vy * 0.35f, R, FH - R), md = M.Len(mx - b.X, my - b.Y);
                 float lx = M.Clamp(m.X + m.Vx * 0.8f, R, FW - R), ly = M.Clamp(m.Y + m.Vy * 0.8f, R, FH - R); // навес летит дольше — упреждение больше
                 if (md < 140 || md > T.lobMax) continue;
@@ -422,19 +441,24 @@ namespace Arena.Sim
                 float v0 = PassSpeed(md);
                 float margin = LaneMargin(b.X, b.Y, mx, my, v0, foes);
                 float sc; bool lob;
-                if (margin > 0.08f && open > 75)
+                if (margin > (called ? 0.03f : 0.08f) && open > (called ? 55 : 75))
                 { sc = 1.3f * openS + 0.9f * prog + 0.55f + Math.Min(margin, 0.4f) - md / 2600 - back; lob = false; }       // низом
-                else if (md >= 380 && MinFoeDist(lx, ly, foes) >= 230 && prog > 0.2f)
+                else if (md >= 380 && MinFoeDist(lx, ly, foes) >= (called ? 170 : 230) && prog > (called ? -0.2f : 0.2f))
                 { sc = 1.0f * openS + 0.9f * prog - 0.6f - md / 2600 - back; lob = true; mx = lx; my = ly; md = M.Len(mx - b.X, my - b.Y); } // навес — только вперёд и совсем свободному
                 else continue;
-                if (!found || sc > bsc) { found = true; bsc = sc; bProg = prog; bmx = mx; bmy = my; bmd = md; bestLob = lob; }
+                if (called) sc += T.callBonus;
+                if (!found || sc > bsc) { found = true; bsc = sc; bProg = prog; bmx = mx; bmy = my; bmd = md; bestLob = lob; bCall = called; }
             }
             bool pressured = press < 170, blocked = blk != null && bd < 110;
             float need = pressured ? 0.45f : blocked ? 0.75f : 1.35f;
             bool shootLane = true;
             foreach (var f in foes) if (M.SegDist(f.X, f.Y, b.X, b.Y, gx, gy) < 38 && Dep(f.Y) > Dep(b.Y) - 10) { shootLane = false; break; }
-            bool canShoot = distG < 520 && (shootLane || distG < 260);
-            if (found && !canShoot && bsc > need && (bProg > 0.12f || pressured || blocked) && Rand() < 0.9f)
+            // вблизи бьём всегда; дальше (до botShootRange) — при свободной линии и не каждый раз, чтобы иногда и пасовали
+            bool canShoot = (distG < 520 && (shootLane || distG < 260))
+                            || (shootLane && distG < T.botShootRange && Rand() < T.botShootEager * (0.5f + D.Abil));
+            // позвали «дай пас» — отдаём, если только сами не бьём в упор
+            bool callPass = found && bCall && bsc > 0.2f && !(canShoot && distG < 330);
+            if (callPass || (found && !canShoot && bsc > need && (bProg > 0.12f || pressured || blocked) && Rand() < 0.9f))
             {
                 var dn = M.Norm(bmx - b.X, bmy - b.Y); var a = AimWithError(dn.x, dn.y, D.Err * 0.45f);
                 if (bestLob) { if (CanLob(b)) { CountKick(b, BotStats.PassLob); LaunchLob(b, a, LobLand(bmd)); } return; }
@@ -456,7 +480,7 @@ namespace Arena.Sim
             if (canShoot && facing > 0.6f)
             {
                 var a = AimWithError(toG.x, toG.y, D.Err);
-                PlanKick(b, a, distG < 260 ? 0.15f : 0.5f + 0.5f * M.Clamp01(distG / 520), BotStats.Shot);
+                PlanKick(b, a, distG < 260 ? 0.15f : 0.5f + 0.5f * M.Clamp01(distG / 640), BotStats.Shot);
                 return;
             }
             // навес на ворота через защитника
@@ -506,9 +530,17 @@ namespace Arena.Sim
                 if (dC > 40 && dC < T.tackleReach)
                 {
                     var dn = M.Norm(px - b.X, py - b.Y);
-                    var knock = M.Norm(c.Vx * 0.5f + dn.x * 260, c.Vy * 0.5f + dn.y * 260); // так отлетит мяч
-                    bool safe = DepOf(b, c.Y) > T.tackleSafeDepth || !AimsAtOwnGoal(b, knock.x, knock.y);
-                    if (safe && Rand() < D.Dash * T.tackleEager) { TryDash(b, dn.x, dn.y); return; }
+                    // прямо сзади мяч выбивает к нашим воротам — тогда заходим чуть сбоку, чтобы он улетел мимо створа
+                    foreach (float ang in TackleAngles)
+                    {
+                        if (dC * Math.Abs(MathF.Sin(ang)) > R * 1.8f) continue; // под таким углом уже не попасть
+                        var dir = M.Rot(dn.x, dn.y, ang);
+                        var knock = M.Norm(c.Vx * 0.5f + dir.x * 260, c.Vy * 0.5f + dir.y * 260); // так отлетит мяч
+                        bool safe = DepOf(b, c.Y) > T.tackleSafeDepth || !KnockToOwnGoal(b, px, py, knock.x, knock.y);
+                        if (!safe) continue;
+                        if (Rand() < D.Dash * T.tackleEager) { TryDash(b, dir.x, dir.y); return; }
+                        break;
+                    }
                 }
             }
             if (!chase) return;

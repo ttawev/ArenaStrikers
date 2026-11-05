@@ -18,6 +18,7 @@ namespace Arena.Sim
         public float MoveX, MoveY;      // field direction, length 0..1
         public bool Kick, Lob, CurveLeft, CurveRight;
         public bool Dash, Ability, BallToMe;
+        public bool CallPass;           // «дай пас»: пока держишь кнопку, над героем метка, партнёры-боты отдают ему мяч
     }
 
     public enum FxKind { Burst, Shake, Goal, Rumble, Denied, Impact, Receive }

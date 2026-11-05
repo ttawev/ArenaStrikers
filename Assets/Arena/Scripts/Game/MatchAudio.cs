@@ -42,7 +42,7 @@ namespace Arena.Game
         readonly AudioSource[] pool = new AudioSource[20]; int next;
         readonly AudioSource crowdSrc, musicSrc;
         readonly AudioClip receive, kickSoft, kickHard, lob, spin, fireIgnite, fireBoom, hookThrow, hookClank, tp, tpBack, vanish, reveal,
-            ice, iceShatter, dash, hit, post, board, bounce, net, horn, whistleShort, whistleEnd, uiMove, uiOk, uiBack, denied,
+            ice, iceShatter, dash, hit, post, board, bounce, net, horn, whistleShort, whistleEnd, uiMove, uiOk, uiBack, denied, callPing,
             crowdLoop, cheer, ooh, musicMenu, musicMatch;
 
         public MatchAudio(GameObject host)
@@ -57,7 +57,7 @@ namespace Arena.Game
             ice = SoundFx.IceCrack(); iceShatter = SoundFx.IceShatter(); dash = SoundFx.Dash(); hit = SoundFx.BodyHit();
             post = SoundFx.Post(); board = SoundFx.Board(); bounce = SoundFx.Bounce(); net = SoundFx.NetSwish(); horn = SoundFx.Horn();
             whistleShort = SoundFx.Whistle(1, false); whistleEnd = SoundFx.Whistle(3, true);
-            uiMove = SoundFx.UiMove(); uiOk = SoundFx.UiConfirm(); uiBack = SoundFx.UiBack(); denied = SoundFx.Denied();
+            uiMove = SoundFx.UiMove(); uiOk = SoundFx.UiConfirm(); uiBack = SoundFx.UiBack(); denied = SoundFx.Denied(); callPing = SoundFx.CallPing();
             crowdLoop = Resources.Load<AudioClip>("Audio/crowd_loop") ?? SoundFx.CrowdLoop();
             cheer = Resources.Load<AudioClip>("Audio/crowd_cheer") ?? SoundFx.CrowdCheer();
             ooh = Resources.Load<AudioClip>("Audio/crowd_ooh") ?? SoundFx.CrowdOoh();
@@ -107,9 +107,9 @@ namespace Arena.Game
         }
 
         // ---------- каждый кадр: следим за героями и мячом ----------
-        class Prev { public float KickCd, Charge, Lob, Curve, FireT, HookCd, WallCd, TpCd, TpBackT, InvisT, Stun, DashCd, X, Y; }
+        class Prev { public float KickCd, Charge, Lob, Curve, FireT, HookCd, WallCd, TpCd, TpBackT, InvisT, Stun, DashCd, X, Y, CallT; }
         readonly List<Prev> prev = new List<Prev>();
-        Match lastMatch; bool lastReplay, wasInMatch; MatchPhase lastPhase; bool lastFrozen = true;
+        Match lastMatch; bool lastReplay, wasInMatch, lastGolden, lastIntro; MatchPhase lastPhase; bool lastFrozen = true;
         float pbVx, pbVy, pbVz, pbFire, pbSpin; bool pbHook;
         float excite, crowdVol; AudioClip wantMusic;
 
@@ -123,10 +123,17 @@ namespace Arena.Game
             {
                 prev.Clear(); foreach (var p in m.Players) prev.Add(Snap(new Prev(), p));
                 lastMatch = m; lastReplay = replay; pbVx = b.Vx; pbVy = b.Vy; pbVz = b.Vz; pbFire = b.Fire; pbSpin = b.Spin; pbHook = b.Hook != null;
-                lastPhase = m.Phase; lastFrozen = m.Freeze > 0;
+                lastPhase = m.Phase; lastFrozen = m.Freeze > 0; lastGolden = m.Golden; lastIntro = m.Intro > 0;
             }
-            // свисток: начало матча, разводка после гола, конец матча
-            if (inMatch && !wasInMatch && !replay) Play(whistleShort, 0.55f);
+            // свисток: начало матча, разводка после гола, конец матча; на выходе команд — рёв трибун
+            if (inMatch && !wasInMatch && !replay) { if (m.Intro > 0) { if (CrowdOn) Play(cheer, 0.8f * Crowd / Mathf.Max(0.01f, Sfx)); excite = 1; } else Play(whistleShort, 0.55f); }
+            if (inMatch && !replay && m.Golden && !lastGolden)
+            {   // золотой гол: гудок и трибуны
+                Play(horn, 0.6f); if (CrowdOn) Play(cheer, 0.9f * Crowd / Mathf.Max(0.01f, Sfx)); excite = 1;
+            }
+            lastGolden = m.Golden;
+            if (inMatch && !replay && lastIntro && m.Intro <= 0 && m.Phase == MatchPhase.Playing && CrowdOn) excite = Mathf.Max(excite, 0.7f);
+            lastIntro = m.Intro > 0;
             wasInMatch = inMatch;
             bool frozen = m.Freeze > 0;
             if (inMatch && !replay && lastFrozen && !frozen && m.Phase == MatchPhase.Playing && m.Mode != GameMode.Training) Play(whistleShort, 0.5f);
@@ -149,7 +156,7 @@ namespace Arena.Game
         {
             q.KickCd = p.KickCd; q.Charge = p.Charging ? p.Charge : 0; q.Lob = p.Lobbing ? p.LobCharge : 0; q.Curve = p.Curving != 0 ? p.CurveCharge : 0;
             q.FireT = p.FireT; q.HookCd = p.HookCd; q.WallCd = p.WallCd; q.TpCd = p.TpCd; q.TpBackT = p.TpBackT; q.InvisT = p.InvisT;
-            q.Stun = p.Stun; q.DashCd = p.DashCd; q.X = p.X; q.Y = p.Y;
+            q.Stun = p.Stun; q.DashCd = p.DashCd; q.X = p.X; q.Y = p.Y; q.CallT = p.CallT;
             return q;
         }
 
@@ -165,6 +172,8 @@ namespace Arena.Game
                 else At(kickSoft, p.X, p.Y, (0.5f + 0.4f * c) * me, 0.08f);
             }
             if (p.FireT > 0 && q.FireT <= 0) At(fireIgnite, p.X, p.Y, 0.7f * me, 0.04f);     // Жар: замах
+            if (p.CallT > q.CallT + 0.3f && m.Local != null && p.Team == m.Local.Team)         // партнёр (или ты) зовёт «дай пас»
+                At(callPing, p.X, p.Y, p == m.Local ? 0.45f : 0.75f, 0.02f);
             if (p.HookCd > q.HookCd + 0.5f) At(hookThrow, p.X, p.Y, 0.7f * me);               // Багор: бросок
             if (p.WallCd > q.WallCd + 0.5f) At(ice, p.X, p.Y, 0.85f * me, 0.04f);             // Стена: разлом
             if (p.TpCd > q.TpCd + 0.5f) At(tp, p.X, p.Y, 0.65f * me, 0.03f);                  // Миг: прыжок
@@ -222,6 +231,7 @@ namespace Arena.Game
             float dGoal = Mathf.Min(b.Y, FH - b.Y);
             if (b.Owner == null && Mathf.Min(toTop, toBot) < 700 && Mathf.Abs(b.Vy) > 500) hot = 0.9f;
             else if (dGoal < 600) hot = 0.6f;
+            if (m.Golden && m.Phase == MatchPhase.Playing) hot = Mathf.Max(hot, 0.55f); // золотой гол — трибуны не затихают
             excite = Mathf.MoveTowards(excite, hot, dt * (hot > excite ? 2.5f : 0.35f));
             float target = (inMatch ? 0.35f + 0.5f * excite : 0.18f) * (m.Mode == GameMode.Training ? 0.5f : 1);
             crowdVol = Mathf.MoveTowards(crowdVol, target, dt * 0.8f);

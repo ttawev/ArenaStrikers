@@ -36,6 +36,12 @@ namespace Arena.Sim
         public float HookCd, FireCd, FireT, TpCd, TpBackT, TpFx, TpFy, CurveCd;
         public float InvisT, InvisCd; // Тень: time left invisible, cooldown
         public float WallCd;          // Стена
+        public float CallT;           // «дай пас»: сколько ещё секунд висит метка над героем
+        public float KoX, KoY;        // выход команд: куда бежать к разводке
+        public int IntroOrder;        // выход команд: номер в своей команде
+        // статистика матча (экран MVP)
+        public int Goals, Assists, Saves, Steals;
+        public void ResetStats() { Goals = Assists = Saves = Steals = 0; }
         public bool Invisible => InvisT > 0;
         public readonly BotBrain Brain = new BotBrain();
 
@@ -46,7 +52,7 @@ namespace Arena.Sim
             Lobbing = false; LobCharge = 0; Curving = 0; CurveCharge = 0; CurveCd = 0;
             Brain.Curve = 0; Brain.WantKick = false;
             Vx = Vy = 0; DashT = 0; Stun = 0; Charge = 0; Charging = false; GrabCd = 0;
-            HookCd = FireCd = FireT = TpCd = TpBackT = 0; InvisT = InvisCd = 0; WallCd = 0;
+            HookCd = FireCd = FireT = TpCd = TpBackT = 0; InvisT = InvisCd = 0; WallCd = 0; CallT = 0;
         }
     }
 
@@ -54,6 +60,7 @@ namespace Arena.Sim
     {
         public float X = Field.FW / 2, Y = Field.FH / 2, Z, Vx, Vy, Vz;
         public SimPlayer Owner, Last, FireBy;
+        public SimPlayer PassBy; // кто из партнёров отдал мяч нынешнему владельцу (для голевых передач)
         public string LastHow = "";
         public SimPlayer Kicker; // последний, кто ОСОЗНАННО сыграл мячом (удар, навес, приём); рикошеты не в счёт // как Last коснулся мяча последним — для журнала автоголов
         public float Lock, Spin, Fire, FireGrace;

@@ -22,6 +22,10 @@ namespace Arena.Sim
         [Tooltip("Боты: подкат рывком сзади — с какого расстояния до соперника с мячом")] [Range(60, 300)] public float tackleReach = 175;
         [Tooltip("Боты: подкат сзади только если соперник дальше этого от наших ворот (иначе мяч может улететь в свои ворота)")] [Range(0, 2400)] public float tackleSafeDepth = 800;
         [Tooltip("Боты: охота до подката сзади (умножается на уровень сложности)")] [Range(0, 1)] public float tackleEager = 0.5f;
+        [Tooltip("Боты: с какого расстояния до ворот бьют, если линия удара свободна (раньше — только вплотную)")] [Range(400, 1400)] public float botShootRange = 820;
+        [Tooltip("Боты: как охотно бьют издалека (за одно «решение»), вблизи — всегда")] [Range(0, 1)] public float botShootEager = 0.45f;
+        [Tooltip("Вратарь: с какого расстояния до ворот выходит навстречу сопернику с мячом")] [Range(300, 1000)] public float keeperRushDist = 720;
+        [Tooltip("Вратарь: с какого расстояния до соперника выбивает мяч рывком из ног")] [Range(60, 260)] public float keeperTackle = 170;
 
         [Header("Приём мяча")]
         [Tooltip("Принимать и отбирать мяч любой стороной (выкл. — только лицом)")] public bool receiveAnySide = true;
@@ -69,5 +73,18 @@ namespace Arena.Sim
 
         [Header("Матч")]
         [Tooltip("Пауза после гола, с: герои празднуют / расстраиваются, потом разводка (в тренировке 0,8)")] [Range(0.8f, 6)] public float goalPause = 2.8f;
+        [Tooltip("Золотой гол: при ничьей после основного времени игра идёт до первого гола")] public bool goldenGoal = true;
+        [Tooltip("Золотой гол: пауза с надписью перед разводкой, с")] [Range(0.5f, 5)] public float goldenPause = 2.4f;
+        [Tooltip("Золотой гол: если никто не забил за это время — ничья, с (0 — без ограничения)")] [Range(0, 300)] public float goldenMax = 120;
+
+        [Header("Выход команд перед матчем")]
+        [Tooltip("Показывать выход команд (не в тренировке; офлайн пропускается кнопкой A / Enter)")] public bool intro = true;
+        [Tooltip("Выбегают из туннеля и встают в линию, с")] [Range(1, 5)] public float introRun = 2.4f;
+        [Tooltip("Стоят в линию и позируют, с")] [Range(0.5f, 6)] public float introPose = 2.6f;
+        [Tooltip("Разбегаются на места разводки, с")] [Range(0.5f, 4)] public float introToPlace = 1.4f;
+
+        [Header("Кнопка «дай пас»")]
+        [Tooltip("Сколько секунд висит метка над героем после нажатия")] [Range(0.3f, 4)] public float callTime = 1.6f;
+        [Tooltip("Боты: насколько охотнее отдают пас позвавшему (прибавка к оценке паса)")] [Range(0, 3)] public float callBonus = 1.2f;
     }
 }

@@ -225,6 +225,7 @@ namespace Arena.Game
             s.Add(L("СТРАЙКЕРОВ", "title-accent", fHead));
             s.Add(L("футбол со способностями · до 8 игроков", "subtitle"));
             Button(main, s, "Играть", () => Show(Screen.Heroes), "item-primary");
+            Button(main, s, "Найти матч", () => host.JoinServer()); // онлайн на нашем сервере: до 8 игроков, пустые места — боты
             Button(main, s, "Онлайн с друзьями", () => Show(Screen.Online));
             Selector(main, s, "Звук", () => MatchAudio.SoundOn ? "ВКЛ" : "ВЫКЛ",
                 () => MatchAudio.SoundOn = !MatchAudio.SoundOn, () => MatchAudio.SoundOn = !MatchAudio.SoundOn);
@@ -282,9 +283,8 @@ namespace Arena.Game
             Field(online, s, "Код", () => host.JoinCode, v => host.JoinCode = v, 12, () => TryJoin(), true);
             Button(online, s, "Войти по коду", () => TryJoin());
 #if !(UNITY_WEBGL && !UNITY_EDITOR)
-            s.Add(L("— или свой сервер —", "divider"));
-            Field(online, s, "Сервер", () => host.ServerAddress, v => host.ServerAddress = v, 40, () => TryServer(), false);
-            Button(online, s, "Подключиться к серверу", () => TryServer());
+            s.Add(L("— или игра с незнакомцами —", "divider"));
+            Button(online, s, "Найти матч", () => TryServer());
 #endif
             errorLabel = L("", "error"); s.Add(errorLabel);
             refreshers.Add(() => { string e = host.NetError ?? ""; if (errorLabel.text != e) errorLabel.text = e; errorLabel.EnableInClassList("hidden", e == ""); });
@@ -294,7 +294,7 @@ namespace Arena.Game
         }
 
         void TryJoin() { if (!string.IsNullOrWhiteSpace(host.JoinCode)) host.JoinRoom(); }
-        void TryServer() { if (!string.IsNullOrWhiteSpace(host.ServerAddress)) host.JoinServer(); }
+        void TryServer() => host.JoinServer(); // пустой адрес — наш сервер по умолчанию
 
         void BuildWait()
         {
@@ -311,6 +311,15 @@ namespace Arena.Game
             s.Add(L("КОМНАТА", "header", fHead));
             codeLabel = L("", "code", fHead); s.Add(codeLabel);
             refreshers.Add(() => { string c = host.Net != null ? host.Net.Code : ""; if (codeLabel.text != c) codeLabel.text = c; });
+            var autoLabel = L("", "note"); s.Add(autoLabel); // «Найти матч»: сколько ждать до автостарта
+            refreshers.Add(() =>
+            {
+                var n = host.Net;
+                string t = n == null || !n.ViaServer ? "" : n.AutoStart > 0 ? "Матч начнётся через " + Mathf.CeilToInt(n.AutoStart) + " с. Пустые места займут боты."
+                         : n.AutoStart == 0 ? "Матч начинается…" : "";
+                if (autoLabel.text != t) autoLabel.text = t;
+                autoLabel.EnableInClassList("hidden", t == "");
+            });
             rosterBox = new VisualElement(); rosterBox.AddToClassList("roster"); rosterBox.pickingMode = PickingMode.Ignore; s.Add(rosterBox);
             roomItemsBox = new VisualElement(); roomItemsBox.pickingMode = PickingMode.Ignore; s.Add(roomItemsBox);
             room.Back = () => host.LeaveRoom();
@@ -322,11 +331,19 @@ namespace Arena.Game
         {
             var net = host.Net;
             roomItemsBox.Clear(); room.Items.Clear();
-            Button(room, roomItemsBox, net.ViaServer ? "Скопировать адрес" : "Скопировать код", () => { GUIUtility.systemCopyBuffer = net.Code; }, "item-small");
+            if (!net.ViaServer) Button(room, roomItemsBox, "Скопировать код", () => { GUIUtility.systemCopyBuffer = net.Code; }, "item-small");
             Selector(room, roomItemsBox, "Герой", () => HName[Mathf.Clamp(host.HeroIndex, 0, 5)], () => host.SetRoomHero((host.HeroIndex + 5) % 6), () => host.SetRoomHero((host.HeroIndex + 1) % 6));
             Selector(room, roomItemsBox, "Команда", () => host.RoomTeam == Team.Home ? "Синие" : "Красные",
                      () => host.SetRoomTeam(host.RoomTeam == Team.Home ? Team.Away : Team.Home), () => host.SetRoomTeam(host.RoomTeam == Team.Home ? Team.Away : Team.Home));
-            if (net.IsHost || net.IsLeader) // на своём сервере комнатой управляет главный — тот, кто вошёл первым
+            if (net.ViaServer && net.IsLeader) // «Найти матч»: главный (вошёл первым) начинает сразу или ждёт игроков
+            {
+                Selector(room, roomItemsBox, "Боты", () => DiffName[Mathf.Clamp(net.Difficulty, 0, 2)],
+                         () => net.SetMode(net.Mode, Math.Max(0, net.Difficulty - 1)), () => net.SetMode(net.Mode, Math.Min(2, net.Difficulty + 1)));
+                Button(room, roomItemsBox, "НАЧАТЬ СЕЙЧАС", () => host.StartRoomMatch(), "item-primary");
+                roomItemsBox.Add(L("Ты главный: начни сразу (свободные места займут боты) или подожди игроков.", "note"));
+            }
+            else if (net.ViaServer) roomItemsBox.Add(L("Ждём игроков. Начнёт главный (★) или автостарт.", "note"));
+            else if (net.IsHost) // комната с другом: хост выбирает формат и сложность
             {
                 Selector(room, roomItemsBox, "Формат", () => ModeName[Math.Max(0, Array.IndexOf(RoomModes, net.Mode))],
                          () => net.SetMode(RoomModes[(Math.Max(0, Array.IndexOf(RoomModes, net.Mode)) + 2) % 3], net.Difficulty),
@@ -335,7 +352,7 @@ namespace Arena.Game
                          () => net.SetMode(net.Mode, Math.Max(0, net.Difficulty - 1)), () => net.SetMode(net.Mode, Math.Min(2, net.Difficulty + 1)));
                 Button(room, roomItemsBox, "НАЧАТЬ МАТЧ", () => host.StartRoomMatch(), "item-primary");
             }
-            else roomItemsBox.Add(L(net.ViaServer ? "Ждём, пока главный (вошёл первым) начнёт матч…" : "Ждём, пока хост начнёт матч…", "note"));
+            else if (!net.ViaServer) roomItemsBox.Add(L("Ждём, пока хост начнёт матч…", "note"));
             Button(room, roomItemsBox, "Выйти из комнаты", () => host.LeaveRoom(), "item-small");
             room.Index = Mathf.Clamp(room.Index, 0, room.Items.Count - 1);
             SetIndex(room, room.Index);
@@ -345,6 +362,7 @@ namespace Arena.Game
         {
             var net = host.Net; if (net == null) return;
             var sb = new System.Text.StringBuilder();
+            sb.Append(net.LeaderSlot).Append('|');
             foreach (var st in net.Roster) sb.Append(st.Slot).Append(st.Name).Append(st.Hero).Append(st.Team).Append(st.Ping).Append('|');
             string sig = sb.ToString(); if (sig == rosterSig) return; rosterSig = sig;
             rosterBox.Clear();
@@ -353,10 +371,11 @@ namespace Arena.Game
                 var row = new VisualElement(); row.AddToClassList("roster-row"); row.pickingMode = PickingMode.Ignore;
                 var t = new VisualElement(); t.AddToClassList("roster-team"); t.AddToClassList(st.Team == Team.Home ? "team-home" : "team-away"); t.pickingMode = PickingMode.Ignore;
                 row.Add(t);
-                row.Add(L((st.Slot == 0 ? "★ " : "") + st.Name + (st.Slot == net.MySlot ? "  (ты)" : ""), "roster-name", fBold));
+                bool lead = net.ViaServer ? st.Slot == net.LeaderSlot : st.Slot == 0;
+                row.Add(L((lead ? "★ " : "") + st.Name + (st.Slot == net.MySlot ? "  (ты)" : ""), "roster-name", fBold));
                 int hi = Array.IndexOf(HeroOrder, st.Hero);
                 row.Add(L(hi >= 0 ? HName[hi] : "?", "roster-hero"));
-                row.Add(L(st.Slot == 0 ? "хост" : st.Ping < 0 ? "пинг —" : "пинг " + st.Ping + " мс", "roster-ping"));
+                row.Add(L(st.Slot == 0 && !net.ViaServer ? "хост" : st.Ping < 0 ? "пинг —" : "пинг " + st.Ping + " мс", "roster-ping"));
                 rosterBox.Add(row);
             }
         }

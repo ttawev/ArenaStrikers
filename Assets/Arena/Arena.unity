@@ -159,6 +159,13 @@ MonoBehaviour:
     bounce: 0.75
     dashPow: 880
     dashCd: 2.2
+    tackleReach: 175
+    tackleSafeDepth: 800
+    tackleEager: 0.5
+    botShootRange: 820
+    botShootEager: 0.45
+    keeperRushDist: 720
+    keeperTackle: 170
     receiveAnySide: 1
     lobMin: 250
     lobMax: 1150
@@ -187,6 +194,7 @@ MonoBehaviour:
     tpDist: 260
     tpBack: 1
     tpCd: 6
+    goalPause: 2.8
   cameraTilt: 52
   cameraDistance: 15
   cameraFov: 38
@@ -199,8 +207,73 @@ MonoBehaviour:
   replaySeconds: 3.5
   replaySpeed: 0.5
   replayDelay: 0.9
+  celebrate: 2
   replayDistance: 8
   replayTilt: 44
+  cine:
+    fov: 34
+    smooth: 2.6
+    hideHud: 1
+    broadcastHeight: 6
+    broadcastBack: 8
+    broadcastLead: 0.35
+    chaseHeight: 1.4
+    chaseDistance: 4
+    chaseAhead: 5
+    orbitHeight: 1.8
+    orbitDistance: 5
+    orbitSpeed: 20
+    goalFrameDist: 7
+    postFx: 1
+    ver: 0
+    dof: 1
+    aperture: 5.6
+    focalLength: 50
+    motionBlur: 0.2
+    grain: 0.1
+    vignette: 0.42
+    grade: 1
+    chroma: 0.05
+    minShot: 2.2
+    chaseSpeed: 1000
+    slowKicks: 1
+    slowMinPower: 0.8
+    slowAmount: 0.35
+    slowTime: 0.5
+  testServer: 
+  highlights:
+    matches: 20
+    keep: 12
+    difficulty: 2
+    leadSeconds: 5
+    slowSeconds: 2
+    slowSpeed: 0.5
+    orbit: 1
+    orbitSeconds: 1.7
+    banner: 1
+    gap: 0.25
+    seed: 0
+  slowMo: 1
+  slowMoAmount: 0.3
+  slowMoAfter: 0.45
+  goalCam: 1
+  goalCamDistance: 6
+  goalCamTilt: 40
+  netPunch: 0.16
+  netStiff: 110
+  netDamp: 0.32
+  confetti: 140
+  goalFlash: 1.6
+  goalFlashTime: 1.8
+  snapsPerSecond: 120
+  minBuffer: 0.015
+  predictOwnHero: 1
+  simulatedPing: 0
+  inputQueue: 4
+  masterVolume: 1
+  sfxVolume: 1
+  crowdVolume: 0.8
+  musicVolume: 0.5
   heroArt:
     height: 1.35
     modelYaw: 0
@@ -215,6 +288,35 @@ MonoBehaviour:
     fireSpeed: 1.2
     dashStart: 0.15
     dashSpeed: 1.6
+    passMax: 0.35
+    passStart: 0.2
+    passSpeed: 1.5
+    runBall: 1
+    runBallRef: 210
+    strafe: 1
+    strafeAngle: 50
+    runBackRef: 220
+    strafeRef: 240
+    dribble: 1
+    dribbleRef: 190
+    abilityHold: 0.55
+    throwStart: 0.2
+    throwSpeed: 1.6
+    punchStart: 0
+    punchSpeed: 1.5
+    spellStart: 0.45
+    spellSpeed: 1.5
+    magicSpeed: 1.2
+    fallStun: 0.6
+    fallStart: 0.15
+    fallSpeed: 1.6
+    fallBackStart: 0.1
+    fallBackSpeed: 1.4
+    getUpLead: 0.3
+    getUpStart: 0.12
+    getUpSpeed: 2
+    celebrateSpeed: 1
+    showCelebrate: 2.4
     tailAmount: 0
     tailStiff: 5
     tailDamp: 0

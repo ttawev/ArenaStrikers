@@ -67,6 +67,64 @@ namespace Arena.Game
             var smh = profile.Add<UnityEngine.Rendering.Universal.ShadowsMidtonesHighlights>(true);
             smh.shadows.Override(new Vector4(0.86f, 0.95f, 1.12f, -0.04f)); smh.highlights.Override(new Vector4(1.06f, 1.0f, 0.92f, 0f));
             vol.sharedProfile = profile;
+            BuildCineFx(root);
+        }
+
+        // ---------- «киношная» картинка для кинокамеры и хайлайтов (вес 0 — выключена) ----------
+        UnityEngine.Rendering.Volume cineVol;
+        UnityEngine.Rendering.Universal.DepthOfField dof;
+        UnityEngine.Rendering.Universal.MotionBlur mblur;
+        UnityEngine.Rendering.Universal.FilmGrain grain;
+        UnityEngine.Rendering.Universal.Vignette cineVig;
+        UnityEngine.Rendering.Universal.ColorAdjustments cineCa;
+        UnityEngine.Rendering.Universal.SplitToning split;
+        UnityEngine.Rendering.Universal.ChromaticAberration chroma;
+        UnityEngine.Rendering.Universal.Bloom cineBloom;
+
+        void BuildCineFx(Transform root)
+        {
+            var go = new GameObject("CineFx"); go.transform.SetParent(root, false);
+            cineVol = go.AddComponent<UnityEngine.Rendering.Volume>();
+            cineVol.isGlobal = true; cineVol.priority = 20; cineVol.weight = 0;
+            var p = ScriptableObject.CreateInstance<UnityEngine.Rendering.VolumeProfile>();
+            dof = p.Add<UnityEngine.Rendering.Universal.DepthOfField>(true);
+            dof.mode.Override(UnityEngine.Rendering.Universal.DepthOfFieldMode.Bokeh);
+            dof.focusDistance.Override(10); dof.focalLength.Override(75); dof.aperture.Override(2.8f);
+            mblur = p.Add<UnityEngine.Rendering.Universal.MotionBlur>(true);
+            mblur.intensity.Override(0.35f); mblur.quality.Override(UnityEngine.Rendering.Universal.MotionBlurQuality.Medium);
+            grain = p.Add<UnityEngine.Rendering.Universal.FilmGrain>(true);
+            grain.type.Override(UnityEngine.Rendering.Universal.FilmGrainLookup.Medium1); grain.intensity.Override(0.3f); grain.response.Override(0.8f);
+            cineVig = p.Add<UnityEngine.Rendering.Universal.Vignette>(true);
+            cineVig.intensity.Override(0.42f); cineVig.smoothness.Override(0.5f); cineVig.color.Override(new Color(0.01f, 0.02f, 0.04f));
+            cineCa = p.Add<UnityEngine.Rendering.Universal.ColorAdjustments>(true);
+            cineCa.contrast.Override(24f); cineCa.saturation.Override(14f); cineCa.postExposure.Override(0.4f);
+            split = p.Add<UnityEngine.Rendering.Universal.SplitToning>(true); // «кино»: холодные тени, тёплый свет
+            split.shadows.Override(new Color(0.25f, 0.5f, 0.65f)); split.highlights.Override(new Color(1f, 0.72f, 0.45f)); split.balance.Override(-10);
+            chroma = p.Add<UnityEngine.Rendering.Universal.ChromaticAberration>(true);
+            chroma.intensity.Override(0.12f);
+            cineBloom = p.Add<UnityEngine.Rendering.Universal.Bloom>(true);
+            cineBloom.intensity.Override(1.2f); cineBloom.threshold.Override(0.95f); cineBloom.scatter.Override(0.72f);
+            cineVol.sharedProfile = p;
+        }
+
+        /// <summary>Вес «киношной» картинки (0..1), расстояние фокуса (м) и настройки кинокамеры.</summary>
+        public void SetCineFx(float weight, float focusDist, CineTuning s)
+        {
+            if (cineVol == null) return;
+            cineVol.weight = weight;
+            cineVol.enabled = weight > 0.001f;
+            if (weight <= 0.001f) return;
+            dof.active = s.dof;
+            dof.focusDistance.value = Mathf.Max(0.3f, focusDist);
+            dof.aperture.value = s.aperture; dof.focalLength.value = s.focalLength;
+            mblur.active = s.motionBlur > 0.01f; mblur.intensity.value = s.motionBlur;
+            grain.active = s.grain > 0.01f; grain.intensity.value = s.grain;
+            cineVig.intensity.value = s.vignette;
+            cineCa.contrast.value = 14 + 10 * s.grade; cineCa.saturation.value = 6 + 8 * s.grade;
+            split.active = s.grade > 0.01f; split.balance.value = -10;
+            split.shadows.value = Color.Lerp(Color.gray, new Color(0.25f, 0.5f, 0.65f), Mathf.Clamp01(s.grade));
+            split.highlights.value = Color.Lerp(Color.gray, new Color(1f, 0.72f, 0.45f), Mathf.Clamp01(s.grade));
+            chroma.intensity.value = s.chroma;
         }
 
         UnityEngine.Rendering.Universal.Bloom bloom;
@@ -227,17 +285,67 @@ namespace Arena.Game
         void BuildStands() => stadium = new StadiumView(root);
 
         // ---------- ball and effects ----------
+        /// <summary>Классический футбольный мяч (усечённый икосаэдр): 12 тёмных пятиугольников, 20 белых шестиугольников,
+        /// утопленные швы (карта нормалей). Текстура в развёртке сферы Unity, считается один раз при запуске.</summary>
+        static Material BallMaterial()
+        {
+            const int W = 1024, H = 512;
+            float t = (1 + Mathf.Sqrt(5)) / 2;
+            var penta = new System.Collections.Generic.List<Vector3>();
+            foreach (var v in new[] { new Vector3(-1, t, 0), new Vector3(1, t, 0), new Vector3(-1, -t, 0), new Vector3(1, -t, 0),
+                                      new Vector3(0, -1, t), new Vector3(0, 1, t), new Vector3(0, -1, -t), new Vector3(0, 1, -t),
+                                      new Vector3(t, 0, -1), new Vector3(t, 0, 1), new Vector3(-t, 0, -1), new Vector3(-t, 0, 1) }) penta.Add(v.normalized);
+            var centers = new System.Collections.Generic.List<Vector3>(penta);
+            // центры шестиугольников — центры граней икосаэдра (тройки соседних вершин)
+            float edge = Vector3.Distance(penta[0], penta[1]) * 1.01f;
+            for (int i = 0; i < 12; i++) for (int j = i + 1; j < 12; j++) for (int k = j + 1; k < 12; k++)
+                if (Vector3.Distance(penta[i], penta[j]) < edge && Vector3.Distance(penta[j], penta[k]) < edge && Vector3.Distance(penta[i], penta[k]) < edge)
+                    centers.Add((penta[i] + penta[j] + penta[k]).normalized);
+            var col = new Color32[W * H]; var nrm = new Color32[W * H]; var seam = new float[W * H];
+            Color32 dark = new Color32(20, 38, 64, 255), white = new Color32(240, 242, 246, 255), line = new Color32(150, 156, 168, 255);
+            for (int y = 0; y < H; y++)
+            {
+                float th = (y + 0.5f) / H * Mathf.PI; // от южного полюса к северному
+                float sy = -Mathf.Cos(th), r = Mathf.Sin(th);
+                for (int x = 0; x < W; x++)
+                {
+                    float ph = (x + 0.5f) / W * Mathf.PI * 2;
+                    var d = new Vector3(-Mathf.Cos(ph) * r, sy, -Mathf.Sin(ph) * r);
+                    float b1 = -2, b2 = -2; int bi = 0;
+                    for (int c = 0; c < centers.Count; c++)
+                    {
+                        float dt = Vector3.Dot(d, centers[c]);
+                        if (dt > b1) { b2 = b1; b1 = dt; bi = c; } else if (dt > b2) b2 = dt;
+                    }
+                    float g = b1 - b2; // у шва две грани почти равны
+                    float sm = Mathf.Clamp01(1 - g / 0.018f);
+                    seam[y * W + x] = sm;
+                    Color32 basec = bi < 12 ? dark : white;
+                    col[y * W + x] = Color32.Lerp(basec, line, sm * 0.85f);
+                }
+            }
+            for (int y = 0; y < H; y++)
+                for (int x = 0; x < W; x++)
+                {   // нормали из «высоты» швов (шов утоплен)
+                    float hl = seam[y * W + (x + W - 1) % W], hr = seam[y * W + (x + 1) % W];
+                    float hd = seam[Mathf.Max(0, y - 1) * W + x], hu = seam[Mathf.Min(H - 1, y + 1) * W + x];
+                    var n = new Vector3((hl - hr) * 1.2f, (hd - hu) * 1.2f, 1).normalized;
+                    nrm[y * W + x] = new Color32((byte)(n.x * 127 + 128), (byte)(n.y * 127 + 128), (byte)(n.z * 127 + 128), 255);
+                }
+            var tex = new Texture2D(W, H, TextureFormat.RGBA32, true) { anisoLevel = 4, filterMode = FilterMode.Trilinear, wrapModeU = TextureWrapMode.Repeat, wrapModeV = TextureWrapMode.Clamp };
+            tex.SetPixels32(col); tex.Apply(true, true);
+            var nt = new Texture2D(W, H, TextureFormat.RGBA32, true, true) { anisoLevel = 4, filterMode = FilterMode.Trilinear, wrapModeU = TextureWrapMode.Repeat, wrapModeV = TextureWrapMode.Clamp };
+            nt.SetPixels32(nrm); nt.Apply(true, true);
+            var mat = new Material(Mat.Solid(Color.white, 0.62f));
+            mat.SetTexture("_BaseMap", tex);
+            mat.SetTexture("_BumpMap", nt); mat.SetFloat("_BumpScale", 1f); mat.EnableKeyword("_NORMALMAP");
+            return mat;
+        }
+
+        // ---------- ball and effects (сцена) ----------
         void BuildBall()
         {
-            var tex = new Texture2D(128, 64);
-            var px = new Color32[128 * 64];
-            for (int i = 0; i < px.Length; i++) px[i] = new Color32(255, 255, 255, 255);
-            int[,] patches = { { 16, 32, 8 }, { 48, 15, 7 }, { 48, 49, 7 }, { 80, 32, 8 }, { 112, 15, 7 }, { 112, 49, 7 }, { 64, 2, 7 }, { 64, 62, 7 } };
-            for (int p = 0; p < patches.GetLength(0); p++)
-                for (int i = 0; i < 128; i++) for (int j = 0; j < 64; j++)
-                        if ((i - patches[p, 0]) * (i - patches[p, 0]) + (j - patches[p, 1]) * (j - patches[p, 1]) <= patches[p, 2] * patches[p, 2]) px[j * 128 + i] = new Color32(22, 48, 58, 255);
-            tex.SetPixels32(px); tex.Apply();
-            var mat = new Material(Mat.Solid(Color.white, 0.4f)); mat.SetTexture("_BaseMap", tex);
+            var mat = BallMaterial();
             ball = Shapes.Prim(PrimitiveType.Sphere, root, Vector3.zero, Vector3.one * BR * 2 * S, mat, "Ball").transform;
             trail = ball.gameObject.AddComponent<TrailRenderer>();
             trail.time = 0.12f; trail.startWidth = BR * 1.6f * S; trail.endWidth = 0; trail.minVertexDistance = 0.02f;

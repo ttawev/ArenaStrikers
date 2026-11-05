@@ -113,8 +113,14 @@ namespace Arena.Game
             var crowdMat = new Material(Mat.ParticleShader); // неосвещённый, с цветом вершин: тысячи зрителей одним материалом
             crowdMat.SetFloat("_Surface", 0); crowdMat.SetColor("_BaseColor", Color.white);
             crowdMat.renderQueue = (int)UnityEngine.Rendering.RenderQueue.Geometry;
-            Color[] riser = { Mat.Hex("#151c33"), Mat.Hex("#19213b") }; // тёмно-синие, как ночной стадион на референсе
-            Color[] seats = { Mat.Hex("#24325c"), Mat.Hex("#2a3b6b") };
+            // современный стадион: серый бетон ступеней, пластиковые кресла секциями в цветах команд, светлые проходы-лестницы
+            Color[] riser = { Mat.Hex("#2b313d"), Mat.Hex("#323947") };
+            var riserMat = new[] { Mat.Solid(riser[0], 0.08f), Mat.Solid(riser[1], 0.08f) };
+            var seatHome = Mat.Solid(Color.Lerp(Mat.Home, Color.black, 0.35f), 0.55f);   // глянцевый пластик
+            var seatAway = Mat.Solid(Color.Lerp(Mat.Away, Color.black, 0.4f), 0.55f);
+            var seatGrey = Mat.Solid(Mat.Hex("#4a5160"), 0.5f);
+            var aisleMat = Mat.Solid(Mat.Hex("#5a6272"), 0.1f);
+            var edgeMat = Mat.Glow(new Color(0.55f, 0.6f, 0.7f)); // тонкая светлая кромка ступени
             var rnd = new System.Random(7);
             foreach (var sd in Sides())
             {
@@ -122,8 +128,18 @@ namespace Arena.Game
                 {
                     float o = sd.Off + D0 + r * DEP, h = H0 + r * RISE;
                     // ступень: бетон + полоса сидений
-                    StandBox(sd, o + DEP / 2, h / 2, DEP, h, Mat.Solid(riser[r % 2], 0.05f));
-                    StandBox(sd, o + DEP * 0.7f, h + 4, DEP * 0.35f, 8, Mat.Solid(seats[r % 2], 0.1f));
+                    StandBox(sd, o + DEP / 2, h / 2, DEP, h, riserMat[r % 2]);
+                    StandBox(sd, o + 1.5f, h + 0.5f, 3, 1, edgeMat); // кромка ступени
+                    // кресла секциями между проходами
+                    for (float a = 0; a < sd.Len - 1; a += AISLE)
+                    {
+                        float a1 = Mathf.Min(a + AISLE, sd.Len);
+                        double pick = rnd.NextDouble();
+                        var m = pick < 0.1 ? seatGrey : pick < 0.1 + 0.9 * sd.HomeShare ? seatHome : seatAway;
+                        StandSeg(sd, a + 28, a1 - 28, o + DEP * 0.7f, h + 9, DEP * 0.38f, 18, m);       // сиденья
+                        StandSeg(sd, a + 28, a1 - 28, o + DEP * 0.88f, h + 22, 6, 34, m);              // спинки
+                        StandSeg(sd, a - 22, a + 22, o + DEP / 2, h + 2, DEP, 4, aisleMat);           // проход-лестница
+                    }
                     if (sd.Nx > 0 && r > 2) continue; // ближнюю трибуну камера почти не видит — там зрители только в первых рядах
                     // зрители этого ряда — один меш, чтобы ряд можно было «подбрасывать»
                     var go = new GameObject("CrowdRow"); go.transform.SetParent(root, false);
@@ -136,6 +152,20 @@ namespace Arena.Game
                 float back = sd.Off + D0 + ROWS * DEP;
                 StandBox(sd, back + 10, (H0 + ROWS * RISE + 120) / 2, 20, H0 + ROWS * RISE + 120, Mat.Solid(Mat.Hex("#0e1428"), 0.05f));
             }
+        }
+
+        const float AISLE = 330; // шаг проходов между секциями кресел, единиц поля
+
+        /// <summary>Кусок вдоль стороны от a0 до a1 (вдоль), на расстоянии off от линии поля.</summary>
+        void StandSeg(Side sd, float a0, float a1, float off, float hMid, float depth, float height, Material m)
+        {
+            a0 = Mathf.Max(0, a0); a1 = Mathf.Min(sd.Len, a1);
+            if (a1 <= a0) return;
+            float am = (a0 + a1) / 2, len = a1 - a0;
+            float cx = sd.X0 + sd.Ax * am + sd.Nx * off, cy = sd.Y0 + sd.Ay * am + sd.Ny * off;
+            float w = sd.Ax != 0 ? len : depth, d = sd.Ax != 0 ? depth : len;
+            var g = Shapes.Prim(PrimitiveType.Cube, root, W.Pos(cx, cy, hMid), new Vector3(d * S, height * S, w * S), m, "Seat");
+            g.GetComponent<MeshRenderer>().shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
         }
 
         void StandBox(Side sd, float off, float hMid, float depth, float height, Material m)
@@ -527,6 +557,8 @@ namespace Arena.Game
         // ---------- каждый кадр ----------
         int lastHome = -1, lastAway = -1;
         float goalT; Team goalTeam;
+        float goldW; // золотой гол: свет стадиона уходит в золото
+        static readonly Color Gold = new Color(1f, 0.74f, 0.2f);
 
         public void Sync(Match m, float t, float dt)
         {
@@ -539,6 +571,8 @@ namespace Arena.Game
             lastHome = m.ScoreHome; lastAway = m.ScoreAway;
             goalT = Mathf.Max(0, goalT - dt);
             float party = Mathf.Clamp01(goalT / 1.5f);
+            goldW = Mathf.MoveTowards(goldW, m.Golden && m.Phase == MatchPhase.Playing ? 1 : 0, dt * 0.8f);
+            float goldPulse = goldW * (0.75f + 0.25f * Mathf.Sin(t * 3.2f));
 
             // зрители: лёгкое покачивание, после гола — прыжки (болельщики забившей команды прыгают выше)
             foreach (var r in rows)
@@ -560,6 +594,7 @@ namespace Arena.Game
             foreach (var b in boards)
             {
                 if (goalT > 0) { b.Text.text = "ГОЛ!"; b.Text.color = Mathf.Sin(t * 20 + b.Phase) > 0 ? gc : Color.white; continue; }
+                if (goldW > 0.5f) { b.Text.text = "ЗОЛОТОЙ ГОЛ"; b.Text.color = Color.Lerp(Gold, Color.white, 0.5f + 0.5f * Mathf.Sin(t * 4 + b.Phase)); continue; }
                 int k = (int)((t + b.Phase) / 4f) % Msgs.Length;
                 b.Text.text = Msgs[(k + System.Array.IndexOf(Msgs, b.Msg)) % Msgs.Length];
                 b.Text.color = Color.Lerp(Color.white, Color.Lerp(home, away, 0.5f + 0.5f * Mathf.Sin(t * 0.8f + b.Phase)), 0.35f);
@@ -572,7 +607,8 @@ namespace Arena.Game
                 else
                 {
                     int sec = Mathf.Max(0, Mathf.CeilToInt(m.Clock));
-                    scoreText.text = "<color=#" + hc + ">" + m.ScoreHome + "</color> : <color=#" + ac + ">" + m.ScoreAway + "</color>   " + (sec / 60) + ":" + (sec % 60).ToString("00");
+                    string clock = m.Golden ? "<color=#" + ColorUtility.ToHtmlStringRGB(Gold) + ">ЗОЛОТОЙ ГОЛ</color>" : (sec / 60) + ":" + (sec % 60).ToString("00");
+                    scoreText.text = "<color=#" + hc + ">" + m.ScoreHome + "</color> : <color=#" + ac + ">" + m.ScoreAway + "</color>   " + clock;
                 }
             }
             SyncShadows(m);
@@ -584,22 +620,23 @@ namespace Arena.Game
             {
                 float pulse = flash * Mathf.Max(0, Mathf.Sin(t * 22 + i * 1.6f)) * GoalFlash;
                 Color baseC = new Color(3f, 2.8f, 2.4f) * (0.97f + 0.03f * Mathf.PerlinNoise(t * 3, i));
+                baseC = Color.Lerp(baseC, Gold * 3.4f, goldPulse * 0.7f);
                 lampMats[i].SetColor("_BaseColor", Color.Lerp(baseC, gc * 4f, Mathf.Clamp01(pulse)) * (1 + pulse));
                 if (i < spots.Count)
                 {
                     spots[i].intensity = 3.2f * (1 + pulse * 3f);
-                    spots[i].color = Color.Lerp(spotCols[i], gc, Mathf.Clamp01(pulse * 0.8f));
+                    spots[i].color = Color.Lerp(Color.Lerp(spotCols[i], Gold, goldPulse * 0.55f), gc, Mathf.Clamp01(pulse * 0.8f));
                 }
                 if (i < pools.Count)
                 {   // световое пятно на газоне вспыхивает цветом команды — его видно в кадре всегда
-                    var pc = Color.Lerp(poolCols[i], new Color(gc.r, gc.g, gc.b, 0.5f), Mathf.Clamp01(pulse));
+                    var pc = Color.Lerp(Color.Lerp(poolCols[i], new Color(Gold.r, Gold.g, Gold.b, poolCols[i].a), goldPulse * 0.6f), new Color(gc.r, gc.g, gc.b, 0.5f), Mathf.Clamp01(pulse));
                     pools[i].SetColor("_BaseColor", pc);
                 }
             }
             if (neonMat != null)
             {   // неон по краю трибун: после гола мигает цветом команды
                 float np = flash * GoalFlash * (Mathf.Sin(t * 16) > 0 ? 1 : 0.15f);
-                var nc = Color.Lerp(new Color(0.25f, 1.3f, 2.2f), gc * 3.5f, Mathf.Clamp01(np)); nc.a = 1;
+                var nc = Color.Lerp(Color.Lerp(new Color(0.25f, 1.3f, 2.2f), Gold * 3f, goldPulse), gc * 3.5f, Mathf.Clamp01(np)); nc.a = 1;
                 neonMat.SetColor("_BaseColor", nc);
             }
         }

@@ -163,7 +163,7 @@ namespace Arena.Sim
                     if ((b.Owner == null || b.Owner.Team != o.Team) && b.Hook == null && b.Z < HEAD && M.SegDist(b.X, b.Y, px, py, h.X, h.Y) < BR + T.hookGrab)
                     {
                         b.Vz = 0;
-                        if (b.Owner != null) ReleaseBall(b.Owner, 0.6f);
+                        if (b.Owner != null) { o.Steals++; ReleaseBall(b.Owner, 0.6f); } // вырвал мяч у соперника
                         b.Hook = h; h.HasBall = true; b.Spin = 0; h.Back = true; b.Fire = 0;
                         Burst(h.X, h.Y, FxColor.Mist, 8, 0.6f); Rumble(o, 0.25f);
                     }
