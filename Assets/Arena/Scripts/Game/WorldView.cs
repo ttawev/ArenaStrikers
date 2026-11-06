@@ -569,11 +569,13 @@ namespace Arena.Game
                 var p = m.Players[heroes.Count];
                 heroes.Add(new HeroView(root, p.Team, "Hero" + heroes.Count));
             }
-            for (int i = 0; i < heroes.Count; i++) heroes[i].SetVisible(i < m.Players.Count && !HiddenForMvp(m.Players[i]));
+            for (int i = 0; i < heroes.Count; i++) heroes[i].SetVisible(i < m.Players.Count && !HideHeroes && !HiddenForMvp(m.Players[i]));
         }
 
         /// <summary>Экран MVP: лучший игрок (задаёт ArenaGame каждый кадр, иначе null). Остальные рядом с ним прячутся, чтобы не загораживали.</summary>
         public static SimPlayer MvpSolo;
+        /// <summary>Главное меню: ночной стадион без героев (MenuStage).</summary>
+        public static bool HideHeroes;
         /// <summary>Радиус вокруг MVP, в котором другие герои прячутся на экране MVP (единицы поля, 100 = 1 м).</summary>
         public static float MvpSoloRadius = 520;
         static bool HiddenForMvp(SimPlayer p)

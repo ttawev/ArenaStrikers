@@ -521,6 +521,13 @@ namespace Arena.Sim
                 p.Fx = MathF.Cos(a); p.Fy = MathF.Sin(a);
             }
             if (p.DashT > 0) p.DashT -= dt;
+            else if (p.PushT > 0)
+            {   // отлёт после огненного мяча от союзника: равномерно тормозит до нуля к концу (управление бегом ждёт, удар — нет)
+                float dec = 2 * T.fireAllyPush / Math.Max(0.01f, T.fireAllyPushTime * T.fireAllyPushTime) * dt;
+                float sp = M.Len(p.Vx, p.Vy), ns = Math.Max(0, sp - dec);
+                if (sp > 0) { p.Vx *= ns / sp; p.Vy *= ns / sp; }
+                p.PushT -= dt;
+            }
             else
             {
                 float k = Math.Min(1, (p.Stun > 0 ? 3 : 14) * dt);
@@ -595,6 +602,25 @@ namespace Arena.Sim
             var b = Ball;
             if (b.Owner == p || b.Hook != null) return;
             if (b.Fire > 0 && b.Owner == null && p == b.FireBy && b.FireGrace > 0) return;
+            if (b.Fire > 0 && b.Owner == null && b.FireBy != null && b.FireBy.Team == p.Team && p != b.FireBy && !p.Dummy && p.Stun <= 0)
+            {   // огненный мяч попал в союзника: он принимает мяч и отлетает вместе с ним (без оглушения), бить можно прямо в полёте
+                float fx = b.X - p.X, fy = b.Y - p.Y, fd = M.Len(fx, fy);
+                if (fd < R + BR + 2 && b.Z < HEAD)
+                {
+                    var bv = M.Norm(b.Vx, b.Vy);
+                    bool ch = p.Charging; float cg = p.Charge; // заряд удара не сбрасываем — можно сразу пробить
+                    b.Fire = 0; TakeBall(p); b.LastHow = "приём огненного удара";
+                    p.Charging = ch; p.Charge = cg;
+                    if (T.fireAllyPush > 0)
+                    {
+                        float v0 = 2 * T.fireAllyPush / T.fireAllyPushTime; // равнозамедленно: ровно fireAllyPush за fireAllyPushTime
+                        p.Vx = bv.x * v0; p.Vy = bv.y * v0; p.PushT = T.fireAllyPushTime; p.DashT = 0;
+                    }
+                    Impact(b.X, b.Y, 0.9f);
+                    Burst(b.X, b.Y, FxColor.Fire, 16, 1f); Burst(b.X, b.Y, FxColor.FireYellow, 10, 0.7f); Shake(6); Rumble(p, 0.5f);
+                    return;
+                }
+            }
             if (b.Fire > 0 && b.Owner == null && b.FireBy != null && b.FireBy.Team != p.Team)
             { // a fire shot hits an opponent: stun, knock back, the ball bounces off weakened
                 float fx = b.X - p.X, fy = b.Y - p.Y, fd = M.Len(fx, fy);

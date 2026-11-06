@@ -67,6 +67,9 @@ namespace Arena.Game
         [Tooltip("Трибуны")] [Range(0, 1)] public float crowdVolume = 0.8f;
         [Range(0, 1)] public float musicVolume = 0.5f;
 
+        [Header("Метка своего героя")]
+        public YouMarkerTuning youMarker = new YouMarkerTuning();
+
         [Header("Модели героев")]
         public HeroArtTuning heroArt = new HeroArtTuning();
 
@@ -159,6 +162,7 @@ namespace Arena.Game
             match = new Match(tuning, System.Environment.TickCount);
             showcase = new HeroShowcase(transform);
             ui = new MenuUI(this, transform);
+            menuStage = new MenuStage(transform);
             GoToMenu(MenuUI.Screen.Main);
             camPos = TargetCamPos(true); camTilt = cameraTilt; camRot = Quaternion.Euler(camTilt, 0, 0);
         }
@@ -308,7 +312,7 @@ namespace Arena.Game
                 match.Events.Clear();
             }
             else if (state == State.Reel) ReelStep(dt);
-            else if (state == State.Menu || state == State.Lobby) AttractStep(dt);
+            else if (state == State.Menu || state == State.Lobby) { if (MenuCineOn) menuStage.HoldBall(match); else AttractStep(dt); } // главное меню — без матча, мяч парит в центре
             else match.Events.Clear();
             if (state == State.Menu || state == State.Lobby)
             {
@@ -323,7 +327,9 @@ namespace Arena.Game
             denyFlash = Mathf.Max(0, denyFlash - dt);
             HeroModel.Tune = heroArt;
             view.SetHeroLight(heroArt.ambientSide, heroArt.ambientGround, heroArt.fillLight);
+            MenuStage.Cfg = menuBackground; menuStage.Tick(MenuCineOn, dt); WorldView.HideHeroes = MenuCineOn;
             MvpLightTick(); // экран MVP: свой свет на лучшем игроке (Game/ArenaGame.MvpLight.cs)
+            YouMarker.Cfg = youMarker;
             GoalFx.NetPunch = netPunch; GoalFx.NetStiff = netStiff; GoalFx.NetDamp = netDamp; GoalFx.ConfettiCount = confetti;
             StadiumView.GoalFlash = goalFlash; StadiumView.GoalFlashTime = goalFlashTime;
             view.SetBloom(heroArt.bloom);
@@ -335,9 +341,9 @@ namespace Arena.Game
             toastT = Mathf.Max(0, toastT - dt);
             UpdateCamera(dt);
             if (state == State.Reel) TrackFrame();
-            bool cineFx = cine.postFx && (CineOn || ReelPlaying || showFx);
+            bool cineFx = cine.postFx && (CineOn || ReelPlaying || showFx || MenuCineOn);
             cineFxW = Mathf.MoveTowards(cineFxW, cineFx ? 1 : 0, dt * 3);
-            view.SetCineFx(cineFxW, showFx ? showFocus : Vector3.Distance(cam.transform.position, cineCam.Focus), cine);
+            view.SetCineFx(cineFxW, showFx ? showFocus : MenuCineOn ? menuStage.FocusDistance(cam.transform.position) : Vector3.Distance(cam.transform.position, cineCam.Focus), cine);
             Online.SnapRate = snapsPerSecond; Online.MinDelay = minBuffer; Online.PredictOn = predictOwnHero; Online.MaxQueue = inputQueue; Online.SimLagMs = simulatedPing;
             sound.Master = masterVolume; sound.Sfx = sfxVolume; sound.Crowd = crowdVolume; sound.Music = musicVolume;
             sound.Sync(match, cam, dt, state == State.Playing || state == State.Paused || state == State.Ended || state == State.Replay || ReelPlaying, state == State.Replay || state == State.Reel);
@@ -600,6 +606,18 @@ namespace Arena.Game
             return best != null ? match.Players.IndexOf(best) : -1;
         }
 
+        /// <summary>Главное меню (не выбор героя и не комната): фон снимает кинокамера.</summary>
+        bool MenuCineOn => state == State.Menu && ui != null && (ui.Current == MenuUI.Screen.Main || ui.Current == MenuUI.Screen.Settings);
+        bool menuCineWas; MenuStage menuStage;
+        [Header("Фон меню (ночной стадион)")]
+        public MenuStageTuning menuBackground = new MenuStageTuning();
+        SimPlayer NearestToBall()
+        {
+            SimPlayer best = null; float bd = float.MaxValue;
+            foreach (var p in match.Players) { float dx = p.X - match.Ball.X, dy = p.Y - match.Ball.Y, d = dx * dx + dy * dy; if (d < bd) { bd = d; best = p; } }
+            return best;
+        }
+
         bool GoalCamOn => goalCam && state == State.Playing && match.Freeze > 0 && match.Banner != "" && match.Mode != GameMode.Training
                           && goalScorer >= 0 && goalScorer < match.Players.Count;
 
@@ -640,6 +658,17 @@ namespace Arena.Game
                 cam.transform.SetPositionAndRotation(camPos, camRot);
                 return;
             }
+            if (MenuCineOn)
+            {   // главное меню: ночной стадион, мяч светится в центре, камера медленно облетает (Game/MenuStage.cs)
+                menuStage.CameraPose(out var mcp, out var mcr, out var mfov);
+                float mk = menuCineWas ? 1 - Mathf.Exp(-2.5f * dt) : 1; // с экрана выбора героя — плавный перелёт, при запуске — сразу
+                camPos = Vector3.Lerp(camPos, mcp, mk); camRot = Quaternion.Slerp(camRot, mcr, mk);
+                cam.fieldOfView = Mathf.Lerp(cam.fieldOfView, mfov, mk);
+                cam.transform.SetPositionAndRotation(camPos, camRot);
+                menuCineWas = true;
+                return;
+            }
+            menuCineWas = false;
             if (ShowPose(dt, out var spp, out var spr, out var sfov))
             {   // выход команд и MVP: свои киношные планы (Game/ArenaGame.Show.cs)
                 cam.fieldOfView = sfov;

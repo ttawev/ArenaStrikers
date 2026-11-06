@@ -20,8 +20,15 @@ namespace Arena.Game
         public static bool SoundOn
         {
             get => PlayerPrefs.GetInt("arena.sound", 1) == 1;
-            set { PlayerPrefs.SetInt("arena.sound", value ? 1 : 0); PlayerPrefs.Save(); AudioListener.volume = value ? 1 : 0; }
+            set { PlayerPrefs.SetInt("arena.sound", value ? 1 : 0); PlayerPrefs.Save(); ApplyVolume(); }
         }
+        /// <summary>Общая громкость 0..1 (экран «Настройки»), запоминается.</summary>
+        public static float Volume
+        {
+            get => Mathf.Clamp01(PlayerPrefs.GetFloat("arena.volume", 1));
+            set { PlayerPrefs.SetFloat("arena.volume", Mathf.Clamp01(value)); PlayerPrefs.Save(); ApplyVolume(); }
+        }
+        public static void ApplyVolume() => AudioListener.volume = SoundOn ? Volume : 0;
         /// <summary>Трибуны (гул, рёв, «у-у-у») вкл/выкл (главное меню), запоминается.</summary>
         public static bool CrowdOn
         {
@@ -64,7 +71,7 @@ namespace Arena.Game
             musicMenu = Resources.Load<AudioClip>("Audio/music_menu");
             musicMatch = Resources.Load<AudioClip>("Audio/music_match");
             crowdSrc.clip = crowdLoop; crowdSrc.volume = 0; crowdSrc.Play();
-            AudioListener.volume = SoundOn ? 1 : 0;
+            ApplyVolume();
         }
 
         // ---------- проигрывание ----------

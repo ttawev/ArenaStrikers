@@ -12,7 +12,7 @@ namespace Arena.Game
         readonly Transform body, legL, legR, armL, armR, stars, propeller, gem;
         readonly GameObject[] hats = new GameObject[6];
         Renderer[] rends; Material[] origMats; Material ghostMat; bool ghosted; float ghostAlpha = -1;
-        readonly GameObject arcObj, fireRing, rope, hookHead, tpMark, youMark;
+        readonly GameObject arcObj, fireRing, rope, hookHead, tpMark; readonly YouMarker you; // you — метка своего героя (Game/YouMarker.cs)
         readonly GameObject ownRing, ownWave; readonly Material ownRingMat, ownWaveMat; float ownT; // подсветка владельца мяча
         readonly GameObject callMark, callWave; readonly Material callWaveMat; float callPop, mvpTurn; // «дай пас» и поворот MVP к камере
         readonly Mesh arcMesh;
@@ -110,8 +110,7 @@ namespace Arena.Game
             hookHead = Shapes.MeshObj(HeroModel.HookMetalMesh(0), parent, Mat.Solid(Mat.Hex("#d9e2e6"), 0.8f), name + "_hook"); // тот же крюк, что в руке у Багора
             hookHead.transform.localScale = Vector3.one * 1.8f;
             tpMark = Shapes.MeshObj(Shapes.Ring((Field.R - 6) * S, (Field.R + 2) * S), parent, Mat.Clear(new Color(0.56f, 0.85f, 1f, 0.8f), true), name + "_tpMark");
-            youMark = Shapes.MeshObj(Shapes.Cone(8 * S, 16 * S, 4), Root.transform, Mat.Glow(Mat.Hex("#fff3c4")), "youMark");
-            youMark.transform.localRotation = Quaternion.Euler(180, 0, 0);
+            you = new YouMarker(Root.transform);
             // «дай пас»: восклицательный знак над головой и волна по земле (видят только свои)
             callMark = new GameObject("callMark"); callMark.transform.SetParent(Root.transform, false);
             var callCol = Mat.Glow(Mat.Hex("#ffe14d"));
@@ -130,7 +129,7 @@ namespace Arena.Game
             ownWave = Shapes.MeshObj(Shapes.Ring((Field.R + 13) * S, (Field.R + 17) * S), Root.transform, ownWaveMat, "ownWave");
             ownWave.transform.localPosition = V(0, 1.0f, 0);
             ownRing.SetActive(false); ownWave.SetActive(false);
-            rope.SetActive(false); hookHead.SetActive(false); tpMark.SetActive(false); youMark.SetActive(false);
+            rope.SetActive(false); hookHead.SetActive(false); tpMark.SetActive(false);
         }
 
         void SetGhost(float alpha)
@@ -371,8 +370,7 @@ namespace Arena.Game
                 tpMark.transform.localScale = Vector3.one * (1 + Mathf.Sin(t * 14) * 0.12f);
             }
 
-            youMark.SetActive(showYouMark);
-            if (showYouMark) { youMark.transform.localPosition = V(0, 150 + Mathf.Sin(t * 5) * 4, 0); }
+            you.Sync(showYouMark && m.Phase == MatchPhase.Playing && m.Intro <= 0, t, Time.unscaledDeltaTime); // не на выходе команд и не на итогах
 
             // подсветка владельца мяча (невидимую Тень соперникам не выдаём)
             bool own = m.Ball.Owner == p && m.Phase == MatchPhase.Playing && (!p.Invisible || (m.Local != null && p.Team == m.Local.Team));

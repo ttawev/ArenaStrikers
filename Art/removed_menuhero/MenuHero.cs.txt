@@ -1,0 +1,107 @@
+// Главное меню: справа стоит герой на светящемся подиуме и сменяется каждые несколько секунд.
+// Герой стоит в отдельном «закулисье» (под стадионом, свой слой), его снимает своя камера в текстуру с прозрачным фоном,
+// а меню показывает эту текстуру поверх матча ботов. Основная камера этот слой не видит.
+using Arena.Sim;
+using UnityEngine;
+
+namespace Arena.Game
+{
+    public class MenuHero
+    {
+        public const int Layer = 30;                                  // свой слой (в Tags & Layers он безымянный — это нормально)
+        static readonly Vector3 Spot = new Vector3(0, -60, 0);        // под стадионом: основная камера туда не смотрит
+        public const float SwapEvery = 7f;                            // секунд на героя
+
+        public readonly RenderTexture Rt;
+        readonly GameObject root;
+        readonly Transform turn;
+        readonly Camera rtCam;
+        readonly Material ringMat;
+        readonly Light key, rim;
+        HeroModel model; int heroIdx = -1;
+        float t, shownT, pop;
+        public int HeroIndex => heroIdx;
+        public float Pop => pop;          // 1 → 0 после смены героя (для анимации подписи)
+        public float ShownT => shownT;
+
+        public MenuHero(Transform parent)
+        {
+            Rt = new RenderTexture(900, 1200, 24, RenderTextureFormat.ARGB32) { name = "MenuHeroRT", antiAliasing = 4 };
+            Rt.Create();
+            root = new GameObject("menuHero"); root.transform.SetParent(parent, false); root.transform.position = Spot;
+            turn = new GameObject("turn").transform; turn.SetParent(root.transform, false);
+            var disc = Shapes.MeshObj(Shapes.Disc(0.85f, 48), root.transform, Mat.Solid(Mat.Hex("#0d1530"), 0.6f), "podium");
+            disc.transform.localPosition = Vector3.up * 0.01f;
+            ringMat = Mat.Clear(new Color(1, 0.7f, 0.12f, 0.9f), true);
+            var ring = Shapes.MeshObj(Shapes.Ring(0.82f, 0.92f, 64), root.transform, ringMat, "podiumRing");
+            ring.transform.localPosition = Vector3.up * 0.02f;
+
+            key = MakeLight("menuHeroKey", new Vector3(-1.2f, 2.6f, 2.4f), LightType.Spot, new Color(1f, 0.9f, 0.78f), 9f);
+            rim = MakeLight("menuHeroRim", new Vector3(1.1f, 2.2f, -1.6f), LightType.Spot, new Color(0.55f, 0.8f, 1f), 12f);
+
+            var cgo = new GameObject("menuHeroCam"); cgo.transform.SetParent(root.transform, false);
+            rtCam = cgo.AddComponent<Camera>();
+            rtCam.cullingMask = 1 << Layer; rtCam.clearFlags = CameraClearFlags.SolidColor; rtCam.backgroundColor = new Color(0, 0, 0, 0);
+            rtCam.fieldOfView = 30; rtCam.nearClipPlane = 0.1f; rtCam.farClipPlane = 20; rtCam.targetTexture = Rt; rtCam.depth = -20; rtCam.allowHDR = false;
+            cgo.transform.localPosition = new Vector3(0, 1.15f, 4.3f);
+            cgo.transform.LookAt(root.transform.position + Vector3.up * 0.95f);
+
+            SetLayer(root);
+            if (Camera.main != null) Camera.main.cullingMask &= ~(1 << Layer);
+            root.SetActive(false);
+        }
+
+        Light MakeLight(string name, Vector3 local, LightType type, Color c, float intensity)
+        {
+            var go = new GameObject(name); go.transform.SetParent(root.transform, false); go.transform.localPosition = local;
+            go.transform.LookAt(root.transform.position + Vector3.up * 1.1f);
+            var l = go.AddComponent<Light>();
+            l.type = type; l.color = c; l.intensity = intensity; l.range = 8; l.spotAngle = 55; l.shadows = LightShadows.None;
+            l.cullingMask = 1 << Layer; l.renderMode = LightRenderMode.ForcePixel;
+            return l;
+        }
+
+        static void SetLayer(GameObject g) { foreach (var tr in g.GetComponentsInChildren<Transform>(true)) tr.gameObject.layer = Layer; }
+
+        public bool Visible => root.activeSelf;
+
+        public void Show(bool on)
+        {
+            if (root.activeSelf != on) root.SetActive(on);
+            if (on && Camera.main != null) Camera.main.cullingMask &= ~(1 << Layer);
+        }
+
+        void Swap()
+        {
+            int n = 6, next = heroIdx;
+            while (next == heroIdx) next = Random.Range(0, n);
+            heroIdx = next;
+            if (model != null) Object.Destroy(model.Go);
+            var h = MenuUI.HeroOrder[heroIdx];
+            model = HeroModel.Create(h, Team.Home, turn);
+            if (model != null) { SetLayer(model.Go); model.Play(HeroAnim.Celebrate, 0.01f, true); }
+            var c = MenuUI.HColor[heroIdx];
+            ringMat.SetColor("_BaseColor", new Color(c.r * 1.5f, c.g * 1.5f, c.b * 1.5f, 0.95f));
+            shownT = 0; pop = 1;
+        }
+
+        public void Tick(float dt)
+        {
+            if (!root.activeSelf) return;
+            t += dt; shownT += dt;
+            if (heroIdx < 0 || shownT > SwapEvery) Swap();
+            pop = Mathf.MoveTowards(pop, 0, dt * 3f);
+            float yaw = Mathf.Sin(t * 0.5f) * 20 - 8; // лицом к камере (+Z), слегка поворачивается
+            turn.localRotation = Quaternion.Euler(0, yaw, 0);
+            float jump = Mathf.Sin(pop * Mathf.PI);
+            turn.localScale = Vector3.one * (pop > 0.5f ? Mathf.Lerp(0.2f, 1.1f, (1 - pop) * 2) : 1 + jump * 0.1f);
+            turn.localPosition = Vector3.up * (jump * 0.15f);
+            if (model != null)
+            {
+                float cel = HeroModel.Tune.showCelebrate;
+                model.Play(shownT < cel ? HeroAnim.Celebrate : HeroAnim.ShowIdle, 0.35f);
+                model.Tick(dt);
+            }
+        }
+    }
+}

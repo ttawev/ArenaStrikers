@@ -30,6 +30,7 @@ namespace Arena.Sim
 
         public float X, Y, Vx, Vy, Fx, Fy = -1;
         public float DashT, DashCd, Stun, KickCd, Flash, GrabCd;
+        public float PushT; // отталкивание без рывка (огненный мяч попал в союзника): управление ненадолго не мешает отлёту, но соперников не сбивает
         public bool Charging; public float Charge;
         public bool Lobbing; public float LobCharge;
         public int Curving; public float CurveCharge;
@@ -54,7 +55,7 @@ namespace Arena.Sim
         {
             Lobbing = false; LobCharge = 0; Curving = 0; CurveCharge = 0; CurveCd = 0;
             Brain.Curve = 0; Brain.WantKick = false;
-            Vx = Vy = 0; DashT = 0; Stun = 0; Charge = 0; Charging = false; GrabCd = 0;
+            Vx = Vy = 0; DashT = 0; PushT = 0; Stun = 0; Charge = 0; Charging = false; GrabCd = 0;
             HookCd = FireCd = FireT = TpCd = TpBackT = 0; InvisT = InvisCd = 0; WallCd = 0; CallT = 0;
         }
     }

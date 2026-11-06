@@ -60,6 +60,8 @@ namespace Arena.Sim
         [Tooltip("Замах, с")] [Range(0.1f, 1.2f)] public float fireDelay = 0.4f;
         [Range(1400, 3200)] public float firePow = 2300;
         [Tooltip("Оглушение от попадания, с")] [Range(0.2f, 2.5f)] public float fireStun = 1.0f;
+        [Tooltip("Попадание в союзника: он принимает мяч и отлетает с ним на это расстояние (единицы поля, 100 = 1 м; 0 — просто принимает). Не оглушает, бить можно прямо в полёте")] [Range(0, 600)] public float fireAllyPush = 160;
+        [Tooltip("Попадание в союзника: за сколько секунд он пролетает это расстояние")] [Range(0.1f, 1f)] public float fireAllyPushTime = 0.35f;
         [Tooltip("Доля скорости мяча после попадания в игрока")] [Range(0.1f, 0.8f)] public float fireKeep = 0.3f;
         [Range(2, 20)] public float fireCd = 8;
 
