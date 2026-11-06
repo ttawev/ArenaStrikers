@@ -14,6 +14,7 @@ namespace Arena.Sim
             if (b.Owner != null && b.Owner != p) return false;
             if (b.Owner == null && M.Len(b.X - p.X, b.Y - p.Y) > R + BR + 18) return false;
             p.KickCd = 0.22f; b.Last = p; b.Kicker = p; b.LastHow = "удар"; b.Spin = 0; Reveal(p); // a shot gives Тень away
+            if (charge >= 0.5f) SpendStamina(p, T.staminaKick * charge);                 // сильный удар тратит силы, слабый (пас) — нет
             if (b.Owner != p) p.GrabCd = Math.Max(p.GrabCd, 0.3f);
             float pow = T.kick * (0.7f + (T.charge - 0.7f) * charge);
             Rumble(p, charge > 0.6f ? 0.35f : 0.2f);
@@ -60,8 +61,40 @@ namespace Arena.Sim
         void TryDash(SimPlayer p, float dx, float dy)
         {
             if (p.DashCd > 0 || p.Stun > 0) return;
+            if (!CanDashStamina(p)) { if (!Predicting) Denied(p); return; } // мало сил — подкат нельзя
             (float x, float y) d = (dx != 0 || dy != 0) ? M.Norm(dx, dy) : (p.Fx, p.Fy);
             p.DashT = 0.17f; p.DashCd = T.dashCd; p.Vx = d.x * T.dashPow; p.Vy = d.y * T.dashPow;
+            SpendStamina(p, T.staminaDash);
+        }
+
+        // ---------- стамина ----------
+        /// <summary>Множитель скорости бега от сил: до staminaTired — полная скорость, дальше вниз до staminaSlow.</summary>
+        public float TiredMul(SimPlayer p)
+        {
+            if (!T.stamina || p.Dummy || p.Stamina >= T.staminaTired) return 1;
+            return T.staminaSlow + (1 - T.staminaSlow) * M.Clamp01(p.Stamina / Math.Max(0.01f, T.staminaTired));
+        }
+        public bool Tired(SimPlayer p) => T.stamina && !p.Dummy && p.Stamina < T.staminaTired;
+        /// <summary>Хватает ли сил на рывок (подкат): нужно не меньше его цены.</summary>
+        public bool CanDashStamina(SimPlayer p) => !T.stamina || p.Dummy || p.Stamina >= T.staminaDash;
+
+        void SpendStamina(SimPlayer p, float cost)
+        {
+            if (!T.stamina || p.Dummy || cost <= 0) return;
+            p.Stamina = Math.Max(0, p.Stamina - cost); p.StaminaRest = T.staminaDelay;
+        }
+
+        /// <summary>Бег в полную силу тратит силы, трусца и шаг — восстанавливают (в тренировке в 4 раза быстрее).</summary>
+        void StepStamina(SimPlayer p, float ix, float iy, float dt, float cdk)
+        {
+            if (!T.stamina || p.Dummy) { p.Stamina = 1; return; }
+            // считаем по наклону стика, а не по скорости: на развороте скорость проходит через ноль, но это не отдых
+            float push = Math.Min(1, M.Len(ix, iy));
+            if (p.DashT > 0 || p.Stun > 0) return;                                   // в рывке и оглушённым — ни тратим, ни копим
+            if (push > 0.75f) { p.Stamina = Math.Max(0, p.Stamina - T.staminaRun * dt); return; }
+            if (p.StaminaRest > 0) { p.StaminaRest -= dt; return; }
+            float regen = push < 0.2f ? T.staminaRegen : T.staminaJogRegen;
+            p.Stamina = Math.Min(1, p.Stamina + regen * dt * cdk);
         }
 
         // ---------- lob ----------
@@ -95,6 +128,7 @@ namespace Arena.Sim
             b.Vx = a.x * v.vh; b.Vy = a.y * v.vh; b.Vz = v.vz; b.Z = 1;
             // same punch as a kick: from half charge up it freezes the frame and sends a shock ring
             float lobCharge = M.Clamp01((D - T.lobMin) / Math.Max(1, T.lobMax - T.lobMin));
+            SpendStamina(p, T.staminaLob * (0.4f + 0.6f * lobCharge));                     // навес тратит силы (дальний — больше)
             Rumble(p, 0.2f + 0.3f * lobCharge); Impact(b.X, b.Y, lobCharge >= 0.5f ? lobCharge : 0.2f);
         }
         bool TryLob(SimPlayer p, float ax, float ay, float charge)
@@ -169,7 +203,8 @@ namespace Arena.Sim
                     }
                     else if (v != null)
                     {
-                        h.Victim = v; h.Back = true; v.Charging = false; v.Charge = 0; v.DashT = 0;
+                        h.Victim = v; h.Back = true; v.Charging = false; v.Charge = 0; v.DashT = 0; v.Stun = Math.Max(v.Stun, 0.12f); // оглушён сразу: в тот же тик уже не подберёт мяч
+                        if (b.Owner == v) { ReleaseBall(v, 0.6f); b.Vx = b.Vy = 0; b.Last = v; b.LastHow = "выронил, когда зацепил крюк"; } // раньше тащили вместе с мячом и он держал его оглушённым
                         if (v.FireT > 0) { v.FireT = 0; v.FireCd = T.fireCd * 0.3f; }
                         Burst(h.X, h.Y, FxColor.Mist, 12, 0.7f); Shake(4); Rumble(o, 0.3f); Rumble(v, 0.5f);
                     }
@@ -199,7 +234,11 @@ namespace Arena.Sim
                     {
                         h.X += nx * s; h.Y += ny * s;
                         if (h.HasBall) { b.X = h.X; b.Y = h.Y; b.Vx = nx * s / dt; b.Vy = ny * s / dt; b.Z = Math.Max(0, b.Z - 300 * dt); }
-                        if (h.Victim != null) { var v = h.Victim; v.X = h.X; v.Y = h.Y; v.Vx = v.Vy = 0; v.Stun = Math.Max(v.Stun, 0.12f); }
+                        if (h.Victim != null)
+                        {
+                            var v = h.Victim; v.X = h.X; v.Y = h.Y; v.Vx = v.Vy = 0; v.Stun = Math.Max(v.Stun, 0.12f);
+                            if (b.Owner == v) { ReleaseBall(v, 0.6f); b.Vx = b.Vy = 0; }
+                        }
                     }
                 }
             }

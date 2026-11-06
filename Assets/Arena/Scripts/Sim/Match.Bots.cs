@@ -97,6 +97,9 @@ namespace Arena.Sim
             StepPlayer(b, mx, my, D.Spd, dt, lx, ly);
         }
 
+        /// <summary>Бот бережёт силы: подкат рывком — только если сил хватает (вратарский бросок в сторону — всегда).</summary>
+        bool BotCanDash(SimPlayer b) => CanDashStamina(b);
+
         void CountKick(SimPlayer b, int intent)
         {
             passFrom = intent == BotStats.PassGround || intent == BotStats.PassLob ? b : null; passType = intent;
@@ -298,7 +301,7 @@ namespace Arena.Sim
                 float px = c.X + c.Vx * 0.1f, py = c.Y + c.Vy * 0.1f;
                 float dB = M.Len(px - b.X, py - b.Y);
                 bool between = Dep(b.Y) < Dep(c.Y) + 10;
-                if (between && dB > 40 && dB < T.keeperTackle && b.DashCd <= 0 && c.Stun <= 0 && Rand() < 0.35f + D.Dash * 0.5f)
+                if (between && dB > 40 && dB < T.keeperTackle && b.DashCd <= 0 && BotCanDash(b) && c.Stun <= 0 && Rand() < 0.35f + D.Dash * 0.5f)
                 { TryDash(b, px - b.X, py - b.Y); tx = px; ty = py; urgent = true; }
                 else if (dB < 110 && KeeperZone(b, ball.X, ball.Y)) { tx = ball.X; ty = ball.Y; urgent = true; }
                 else
@@ -522,7 +525,7 @@ namespace Arena.Sim
             // подкат сзади: соперник с мячом убегает к нашим воротам, мы рядом позади — сбиваем рывком.
             // Может любой бот рядом, не только тот, кто «идёт на мяч» (иначе догоняющий сзади просто бежит следом).
             // Выбитый мяч летит по рывку (Match.DashHit), поэтому только далеко от своих ворот или если мяч уйдёт мимо створа.
-            if (b.DashCd <= 0 && foeHas && ball.Owner.Stun <= 0 && DepOf(b, b.Y) > DepOf(b, ball.Owner.Y) - 10)
+            if (b.DashCd <= 0 && BotCanDash(b) && foeHas && ball.Owner.Stun <= 0 && DepOf(b, b.Y) > DepOf(b, ball.Owner.Y) - 10)
             {
                 var c = ball.Owner;
                 float px = c.X + c.Vx * 0.08f, py = c.Y + c.Vy * 0.08f; // куда он сместится, пока мы рвёмся
@@ -554,7 +557,7 @@ namespace Arena.Sim
             var toBall = M.Norm(ball.X - b.X, ball.Y - b.Y);
             bool towardOwnGoal = toBall.y * -fwd > 0.2f || AimsAtOwnGoal(b, toBall.x, toBall.y);
             bool goalSide = Dep(b.Y) < Dep(ball.Y) + 10; // я между мячом и своими воротами
-            if (b.DashCd <= 0 && dBall > 55 && dBall < 220 && foeHas && goalSide && !towardOwnGoal && Rand() < D.Dash * 0.35f) TryDash(b, ball.X - b.X, ball.Y - b.Y);
+            if (b.DashCd <= 0 && BotCanDash(b) && dBall > 55 && dBall < 220 && foeHas && goalSide && !towardOwnGoal && Rand() < D.Dash * 0.35f) TryDash(b, ball.X - b.X, ball.Y - b.Y);
 
         }
     }

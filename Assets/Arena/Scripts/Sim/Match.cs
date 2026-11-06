@@ -65,6 +65,7 @@ namespace Arena.Sim
         SimPlayer Add(Team team, Hero hero, int humanSlot = -1, bool dummy = false)
         {
             var p = new SimPlayer { Id = Players.Count, Team = team, Hero = hero, HumanSlot = humanSlot, Dummy = dummy, Fy = team == Team.Home ? -1 : 1 };
+            p.Spot = Players.FindAll(q => q.Team == team).Count; // по порядку; перед матчем и после каждого гола места перемешиваются
             Players.Add(p);
             return p;
         }
@@ -136,7 +137,7 @@ namespace Arena.Sim
         /// <summary>Офлайн: пропустить выход команд (A / Enter).</summary>
         public void SkipIntro() { if (Intro > 0) EndIntro(); }
 
-        void EndIntro() { Intro = 0; Kickoff(); Freeze = 0.9f; }
+        void EndIntro() { Intro = 0; Kickoff(false); Freeze = 0.9f; } // места те же, к которым бежали в конце выхода
 
         static void MoveTo(SimPlayer p, float tx, float ty, float spd, float dt, float faceX, float faceY)
         {
@@ -272,11 +273,49 @@ namespace Arena.Sim
 
         void Place(SimPlayer p, float x, float y) { p.X = FW * x; p.Y = FH * y; p.Fx = 0; p.Fy = p.Team == Team.Home ? -1 : 1; }
 
-        void Kickoff()
+        /// <summary>Места на разводке у хозяев (доли поля); у гостей — зеркально. Индекс — SimPlayer.Spot.</summary>
+        static readonly float[][] HomeSpots =
+        {
+            new[] { 0.5f, 0.72f },                                                  // 1 на 1
+            new[] { 0.5f, 0.6f, 0.28f, 0.8f },                                      // 2 на 2
+            new[] { 0.5f, 0.58f, 0.25f, 0.76f, 0.75f, 0.76f },                      // 3 на 3: нападающий у центра, двое сзади по бокам
+            new[] { 0.5f, 0.58f, 0.2f, 0.7f, 0.8f, 0.7f, 0.5f, 0.86f },             // 4 на 4: нападающий, два крайних, один сзади
+        };
+        static readonly float[][] AwaySpots =
+        {
+            new[] { 0.5f, 0.28f },
+            new[] { 0.5f, 0.4f, 0.72f, 0.2f },
+            new[] { 0.5f, 0.42f, 0.25f, 0.24f, 0.75f, 0.24f },
+            new[] { 0.5f, 0.42f, 0.2f, 0.3f, 0.8f, 0.3f, 0.5f, 0.14f },
+        };
+
+        /// <summary>Перемешать места на разводке внутри каждой команды (после гола никто не стоит всю игру впереди).
+        /// Если вышло то же самое, что было, — мешаем ещё раз, чтобы расстановка действительно менялась.</summary>
+        void ShuffleSpots()
+        {
+            foreach (var team in new[] { Team.Home, Team.Away })
+            {
+                var mates = Players.FindAll(p => p.Team == team && !p.Dummy);
+                if (mates.Count == 0) continue;
+                var old = new int[mates.Count]; for (int i = 0; i < mates.Count; i++) old[i] = mates[i].Spot;
+                var order = new int[mates.Count];
+                for (int tries = 0; tries < 6; tries++)
+                {
+                    for (int i = 0; i < order.Length; i++) order[i] = i;
+                    for (int i = order.Length - 1; i > 0; i--) { int j = rng.Next(i + 1); (order[i], order[j]) = (order[j], order[i]); }
+                    bool same = true; for (int i = 0; i < order.Length; i++) if (order[i] != old[i]) { same = false; break; }
+                    if (!same || mates.Count == 1) break;
+                }
+                for (int i = 0; i < mates.Count; i++) mates[i].Spot = order[i];
+            }
+        }
+
+        /// <summary>Разводка: мяч в центр, герои по местам. reshuffle — перемешать места (после гола и в начале матча).</summary>
+        void Kickoff(bool reshuffle = true)
         {
             var b = Ball;
             b.X = FW / 2; b.Y = FH / 2; b.Vx = b.Vy = 0; b.Owner = null; b.Lock = 0;
-            foreach (var p in Players) { p.ResetForKickoff(); p.Brain.T = Rand() * 0.1f; }
+            foreach (var p in Players) { p.ResetForKickoff(); p.Brain.T = Rand() * 0.1f; p.Stamina = Math.Min(1, p.Stamina + T.staminaKickoff); p.StaminaRest = 0; }
             Hooks.Clear(); Walls.Clear(); b.Z = b.Vz = 0; b.Spin = 0; b.Last = null; b.Kicker = null; b.PassBy = null; b.Hook = null; b.Fire = 0; b.FireBy = null;
             var P = Players;
             switch (Mode)
@@ -286,20 +325,18 @@ namespace Arena.Sim
                     foreach (var d in P) if (d.Dummy) { d.HomeX = d.X; d.HomeY = d.Y; }
                     b.X = P[0].X; b.Y = P[0].Y - R - BR - 40;
                     break;
-                case GameMode.FourVsFour:
-                    Place(P[0], 0.5f, 0.58f); Place(P[1], 0.2f, 0.7f); Place(P[2], 0.8f, 0.7f); Place(P[3], 0.5f, 0.86f);
-                    Place(P[4], 0.5f, 0.42f); Place(P[5], 0.2f, 0.3f); Place(P[6], 0.8f, 0.3f); Place(P[7], 0.5f, 0.14f);
-                    break;
-                case GameMode.ThreeVsThree: // нападающий у центра, двое по бокам сзади
-                    Place(P[0], 0.5f, 0.58f); Place(P[1], 0.25f, 0.76f); Place(P[2], 0.75f, 0.76f);
-                    Place(P[3], 0.5f, 0.42f); Place(P[4], 0.25f, 0.24f); Place(P[5], 0.75f, 0.24f);
-                    break;
-                case GameMode.TwoVsTwo:
-                    Place(P[0], 0.5f, 0.6f); Place(P[1], 0.28f, 0.8f); Place(P[2], 0.5f, 0.4f); Place(P[3], 0.72f, 0.2f);
-                    break;
                 default:
-                    Place(P[0], 0.5f, 0.72f); Place(P[1], 0.5f, 0.28f);
+                {
+                    if (reshuffle) ShuffleSpots();
+                    int mi = Math.Max(0, Math.Min(3, TeamSize(Mode) - 1));
+                    foreach (var p in Players)
+                    {
+                        var sp = p.Team == Team.Home ? HomeSpots[mi] : AwaySpots[mi];
+                        int k = Math.Max(0, Math.Min(sp.Length / 2 - 1, p.Spot));
+                        Place(p, sp[k * 2], sp[k * 2 + 1]);
+                    }
                     break;
+                }
             }
         }
 
@@ -369,6 +406,7 @@ namespace Arena.Sim
             StepWalls(dt);
             CollidePlayers();
             foreach (var p in Players) WallPushPlayer(p);
+            foreach (var p in Players) KeepInField(p); // толкотня и разлом не выдавливают героев за борт
             foreach (var p in Players) CollideBall(p);
             StepBall(dt);
         }
@@ -486,14 +524,23 @@ namespace Arena.Sim
             else
             {
                 float k = Math.Min(1, (p.Stun > 0 ? 3 : 14) * dt);
-                float ms = T.speed * spdMul * (p.Charging || p.Lobbing || p.Curving != 0 ? 0.82f : 1) * (Ball.Owner == p ? T.dribble : 1) * (p.FireT > 0 ? 0.35f : 1);
+                float ms = T.speed * spdMul * (p.Charging || p.Lobbing || p.Curving != 0 ? 0.82f : 1) * (Ball.Owner == p ? T.dribble : 1) * (p.FireT > 0 ? 0.35f : 1) * TiredMul(p);
                 p.Vx += (ix * ms - p.Vx) * k; p.Vy += (iy * ms - p.Vy) * k;
             }
+            StepStamina(p, ix, iy, dt, cdk);
             p.X += p.Vx * dt; p.Y += p.Vy * dt;
             if (p.X < R) { p.X = R; p.Vx = 0; }
             if (p.X > FW - R) { p.X = FW - R; p.Vx = 0; }
             if (p.Y < R) { p.Y = R; p.Vy = 0; }
             if (p.Y > FH - R) { p.Y = FH - R; p.Vy = 0; }
+        }
+
+        static void KeepInField(SimPlayer p)
+        {
+            if (p.X < R) { p.X = R; if (p.Vx < 0) p.Vx = 0; }
+            if (p.X > FW - R) { p.X = FW - R; if (p.Vx > 0) p.Vx = 0; }
+            if (p.Y < R) { p.Y = R; if (p.Vy < 0) p.Vy = 0; }
+            if (p.Y > FH - R) { p.Y = FH - R; if (p.Vy > 0) p.Vy = 0; }
         }
 
         void CollidePlayers()
@@ -695,8 +742,9 @@ namespace Arena.Sim
                 b.Fire -= dt; b.FireGrace -= dt;
                 if (M.Len(b.Vx, b.Vy) < 650) b.Fire = 0;
             }
-            if (b.Y < -BR - 4) Goal(Team.Home);
-            else if (b.Y > FH + BR + 4) Goal(Team.Away);
+            // гол — когда мяч ЦЕЛИКОМ за линией (раньше нужен был ещё запас 4: медленный мяч мог остановиться в воротах без гола)
+            if (b.Y < -BR) Goal(Team.Home);
+            else if (b.Y > FH + BR) Goal(Team.Away);
         }
 
         void Goal(Team team)

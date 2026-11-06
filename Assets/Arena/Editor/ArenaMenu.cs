@@ -29,7 +29,7 @@ namespace Arena.EditorTools
             var scenes = EditorBuildSettings.scenes.Where(s => s.path != ScenePath).ToList();
             scenes.Insert(0, new EditorBuildSettingsScene(ScenePath, true));
             EditorBuildSettings.scenes = scenes.ToArray();
-            EditorUtility.DisplayDialog("Арена Страйкеров", "Сцена собрана: " + ScenePath + "\n\nНажми Play, чтобы играть.", "Ок");
+            EditorUtility.DisplayDialog("SpellStrike", "Сцена собрана: " + ScenePath + "\n\nНажми Play, чтобы играть.", "Ок");
         }
 
         [MenuItem("Arena/Открыть сцену", priority = 2)]

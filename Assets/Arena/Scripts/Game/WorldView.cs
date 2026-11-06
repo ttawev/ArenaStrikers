@@ -47,7 +47,12 @@ namespace Arena.Game
             sun.shadows = LightShadows.Soft; sun.shadowStrength = 0.75f;
             sun.transform.rotation = Quaternion.Euler(58, -30, 0);
             RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Trilight;
-            RenderSettings.ambientSkyColor = Mat.Hex("#34446e"); RenderSettings.ambientEquatorColor = Mat.Hex("#1a2340"); RenderSettings.ambientGroundColor = Mat.Hex("#0a0e1c"); // ночная синева
+            RenderSettings.ambientSkyColor = Mat.Hex("#34446e"); RenderSettings.ambientEquatorColor = Mat.Hex("#1a2340"); RenderSettings.ambientGroundColor = Mat.Hex("#0a0e1c"); // ночная синева (бок и низ потом задаёт SetHeroLight)
+            // заполняющий свет без теней — с противоположной прожектору стороны и низко: подсвечивает теневые стороны героев, газон почти не трогает
+            fill = new GameObject("HeroFill").AddComponent<Light>();
+            fill.transform.SetParent(root, false);
+            fill.type = LightType.Directional; fill.color = Mat.Hex("#c9d6ff"); fill.intensity = 0.35f; fill.shadows = LightShadows.None;
+            fill.transform.rotation = Quaternion.Euler(18, 150, 0);
             RenderSettings.fog = true; RenderSettings.fogMode = FogMode.Linear; RenderSettings.fogColor = Mat.Hex("#0a1026");
             RenderSettings.fogStartDistance = 22; RenderSettings.fogEndDistance = 50;
 
@@ -129,6 +134,15 @@ namespace Arena.Game
 
         UnityEngine.Rendering.Universal.Bloom bloom;
         public void SetBloom(float intensity) { if (bloom != null) bloom.intensity.value = intensity; }
+
+        Light fill;
+        /// <summary>Подсветка теневых сторон героев (вместо toon): фоновый свет сбоку и снизу + заполняющий свет. Небо (газон) не меняется.</summary>
+        public void SetHeroLight(Color side, Color ground, float fillIntensity)
+        {
+            if (RenderSettings.ambientEquatorColor != side) RenderSettings.ambientEquatorColor = side;
+            if (RenderSettings.ambientGroundColor != ground) RenderSettings.ambientGroundColor = ground;
+            if (fill != null) { fill.intensity = fillIntensity; fill.enabled = fillIntensity > 0.001f; }
+        }
 
         void BuildPitch()
         {
@@ -555,7 +569,19 @@ namespace Arena.Game
                 var p = m.Players[heroes.Count];
                 heroes.Add(new HeroView(root, p.Team, "Hero" + heroes.Count));
             }
-            for (int i = 0; i < heroes.Count; i++) heroes[i].SetVisible(i < m.Players.Count);
+            for (int i = 0; i < heroes.Count; i++) heroes[i].SetVisible(i < m.Players.Count && !HiddenForMvp(m.Players[i]));
+        }
+
+        /// <summary>Экран MVP: лучший игрок (задаёт ArenaGame каждый кадр, иначе null). Остальные рядом с ним прячутся, чтобы не загораживали.</summary>
+        public static SimPlayer MvpSolo;
+        /// <summary>Радиус вокруг MVP, в котором другие герои прячутся на экране MVP (единицы поля, 100 = 1 м).</summary>
+        public static float MvpSoloRadius = 520;
+        static bool HiddenForMvp(SimPlayer p)
+        {
+            var mvp = MvpSolo;
+            if (mvp == null || p == mvp) return false;
+            float dx = p.X - mvp.X, dy = p.Y - mvp.Y;
+            return dx * dx + dy * dy < MvpSoloRadius * MvpSoloRadius;
         }
 
         public void Rebuild(Match m)

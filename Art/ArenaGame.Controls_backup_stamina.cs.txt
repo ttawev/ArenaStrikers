@@ -1,0 +1,92 @@
+// Подсказка управления справа во время матча: какая кнопка за что отвечает (геймпад или клавиатура — что сейчас в руках).
+// Первые секунды матча видна ярко, потом становится полупрозрачной, чтобы не мешать. F1 — скрыть / показать (запоминается).
+using Arena.Sim;
+using UnityEngine;
+using UnityEngine.InputSystem;
+
+namespace Arena.Game
+{
+    public partial class ArenaGame
+    {
+        float ctlT; // сколько секунд подсказка уже на экране в этом матче
+        static bool CtlOn
+        {
+            get => PlayerPrefs.GetInt("arena.controls", 1) == 1;
+            set { PlayerPrefs.SetInt("arena.controls", value ? 1 : 0); PlayerPrefs.Save(); }
+        }
+
+        /// <summary>Каждый кадр: F1 — подсказка вкл/выкл; новый матч — снова ярко.</summary>
+        void ControlsTick(float dt)
+        {
+            var kb = Keyboard.current;
+            if (kb != null && kb.f1Key.wasPressedThisFrame && (state == State.Playing || state == State.Paused)) { CtlOn = !CtlOn; ctlT = 0; }
+            if (kb != null && kb.f2Key.wasPressedThisFrame)
+            {   // сравнить картинку: toon + обводка → только toon → обычный свет
+                if (heroArt.toon && heroArt.outline) { heroArt.outline = false; Toast("Toon-свет без обводки"); }
+                else if (heroArt.toon) { heroArt.toon = false; Toast("Обычный свет"); }
+                else { heroArt.toon = true; heroArt.outline = true; Toast("Toon-свет и обводка"); }
+            }
+            if (state == State.Menu || state == State.Lobby || match.Intro > 0) ctlT = 0;
+            else if (state == State.Playing && match.Freeze <= 0) ctlT += dt;
+        }
+
+        void ControlsGui(float w, float h)
+        {
+            ShowAssets();
+            float k = K;
+            bool pad = input.UsingGamepad, training = match.Mode == GameMode.Training;
+            var you = match.Local;
+            if (!CtlOn)
+            {   // свернуто: одна строчка-напоминание
+                Txt(new Rect(w - 420 * k, h * 0.13f, 400 * k, 28 * k), "F1 — управление", 18, new Color(1, 1, 1, 0.35f), TextAnchor.MiddleRight, false);
+                return;
+            }
+            var rows = new System.Collections.Generic.List<(string key, string what)>();
+            string ability = HeroAbility[(int)you.Hero];
+            if (pad)
+            {
+                rows.Add(("Стик", "бег, куда бить"));
+                rows.Add(("A", "удар (держи — сильнее)"));
+                rows.Add(("X", "навес (держи — дальше)"));
+                rows.Add(("B", "рывок, отбор"));
+                if (you.Hero == Hero.Curve) rows.Add(("LB/RB", ability.ToLower() + " ← →"));
+                else rows.Add(("Y", ability.ToLower()));
+                if (!training && match.Mode != GameMode.OneVsOne) rows.Add(("RT", "дай пас"));
+                if (training) rows.Add(("Back", "мяч ко мне"));
+                rows.Add(("Start", "пауза"));
+            }
+            else
+            {
+                rows.Add(("WASD", "бег, куда бить"));
+                rows.Add(("J", "удар (держи — сильнее)"));
+                rows.Add(("L", "навес (держи — дальше)"));
+                rows.Add(("K", "рывок, отбор"));
+                if (you.Hero == Hero.Curve) rows.Add(("U / I", ability.ToLower() + " ← →"));
+                else rows.Add(("U", ability.ToLower()));
+                if (!training && match.Mode != GameMode.OneVsOne) rows.Add(("Q", "дай пас"));
+                if (training) rows.Add(("R", "мяч ко мне"));
+                rows.Add(("Esc", "пауза"));
+            }
+
+            // первые 25 с — ярко, потом тише; в замахе/ударе не трогаем, просто полупрозрачно
+            float a = ctlT < 25 ? 1 : Mathf.Lerp(1, 0.42f, Mathf.Clamp01((ctlT - 25) / 2f));
+            float rowH = 34 * k, pw = 330 * k, chipW = 84 * k, pad2 = 14 * k;
+            float ph = rows.Count * rowH + pad2 * 2 + 30 * k;
+            float x = w - pw - 18 * k, y = h * 0.13f;
+            Plate(new Rect(x, y, pw, ph), new Color(0.02f, 0.04f, 0.09f, 0.55f * a));
+            Txt(new Rect(x + pad2, y + 6 * k, pw - pad2 * 2, 28 * k), "УПРАВЛЕНИЕ", 17, new Color(0.75f, 0.84f, 0.84f, 0.85f * a), TextAnchor.MiddleLeft, false);
+            Txt(new Rect(x + pad2, y + 6 * k, pw - pad2 * 2, 28 * k), "F1 — скрыть", 15, new Color(1, 1, 1, 0.4f * a), TextAnchor.MiddleRight, false);
+            float ry = y + pad2 + 26 * k;
+            Color heroCol = you.Hero == Hero.Fire ? Mat.Fire : you.Hero == Hero.Hook ? Mat.Hex("#e2c48a") : you.Hero == Hero.Teleport ? Mat.Blink : you.Hero == Hero.Shade ? Mat.Hex("#b48cff") : you.Hero == Hero.Wall ? Mat.Hex("#9fe8ff") : Mat.Spin;
+            foreach (var (key, what) in rows)
+            {
+                bool abil = what.StartsWith(ability.ToLower());
+                var chip = new Rect(x + pad2, ry + 3 * k, chipW, rowH - 6 * k);
+                Plate(chip, abil ? A(heroCol, 0.9f * a) : new Color(1, 1, 1, 0.16f * a));
+                Txt(chip, key, 17, abil ? new Color(0.05f, 0.06f, 0.1f, a) : new Color(1, 1, 1, a), TextAnchor.MiddleCenter);
+                Txt(new Rect(chip.xMax + 12 * k, ry, pw - chipW - pad2 * 2 - 12 * k, rowH), what, 19, new Color(1, 1, 1, 0.9f * a), TextAnchor.MiddleLeft, false);
+                ry += rowH;
+            }
+        }
+    }
+}

@@ -6,8 +6,8 @@ import bpy, bmesh, os, math, json, struct, shutil
 from mathutils import Vector, Matrix
 
 ROOT = r"C:\Users\user\ArenaStrikers"
-HERO = "vihr"   # jar, bagor, mig, vihr, shadow, stena
-BUILD = ["vihr"]   # пересобрать сразу нескольких (пустой список — только HERO)
+HERO = "jar"   # jar, bagor, mig, vihr, shadow, stena
+BUILD = ["jar"]   # пересобрать сразу нескольких (пустой список — только HERO)
 
 # Суставы (координаты после нормализации: лицо к -Y, ступни на z=0, рост 1.8 м).
 # Для левой стороны (+X); правая зеркальная.
@@ -18,6 +18,14 @@ HEROES = {
         shoulder=(0.06, 0, 1.10), arm=(0.30, 0, 1.08), elbow=(0.52, -0.02, 0.86), wrist=(0.66, -0.08, 0.62), hand_end=(0.76, -0.05, 0.42),
         hip=(0.14, 0, 0.58), knee=(0.17, -0.02, 0.32), ankle=(0.20, -0.02, 0.12), toe=(0.20, -0.18, 0.04), toe_end=(0.20, -0.30, 0.03),
         tail=[(-0.04, 0.17, 0.56), (0.0, 0.22, 0.38), (0.10, 0.27, 0.24), (0.26, 0.26, 0.22), (0.38, 0.26, 0.32), (0.42, 0.26, 0.45)],
+        # массивный подбородок и челюсть (z 1.14..1.25) ниже, чем правило «спина не слушается головы» (< 1.23) —
+        # без этого подбородок висел на груди и растягивался при повороте головы. Целиком на кость головы.
+        # Зона сужается книзу по форме подбородка (ворот майки по бокам не задевать); ниже рта — только кожа
+        # (насыщенный цвет), белая майка остаётся на теле; выше 1.22 — всё, включая белые клыки.
+        rigid=[dict(bone='Head', hue=(0.0, 1.0), min_sat=0.3,
+                    region=lambda x, y, z: 1.135 < z < 1.22 and abs(x) < min(0.15, 0.08 + (z - 1.135) * 1.2) and y < -0.20 + (z - 1.135) * 1.5),
+               dict(bone='Head',
+                    region=lambda x, y, z: 1.22 <= z < 1.32 and abs(x) < 0.15 and y < min(-0.05, -0.20 + (z - 1.135) * 1.5))],
     ),
     "bagor": dict(
         game="Bagor",
@@ -494,6 +502,7 @@ def build(HERO):
     # ---------- рендеры ----------
     sc = bpy.context.scene
     sc.render.engine = 'BLENDER_WORKBENCH'
+    sc.render.image_settings.file_format = 'PNG'   # в файле трейлера выход — видео, а здесь пишем кадры
     sh = sc.display.shading
     sh.light = 'STUDIO'
     sh.color_type = 'TEXTURE'

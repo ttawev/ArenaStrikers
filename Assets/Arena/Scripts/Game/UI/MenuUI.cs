@@ -225,8 +225,8 @@ namespace Arena.Game
         void BuildMain()
         {
             main = NewPage(); var s = Side(main);
-            s.Add(L("АРЕНА", "title-big", fHead));
-            s.Add(L("СТРАЙКЕРОВ", "title-accent", fHead));
+            s.Add(L("SPELL", "title-spell", fHead));   // название игры: SpellStrike (два цвета: магия и огонь)
+            s.Add(L("STRIKE", "title-strike", fHead));
             s.Add(L("футбол со способностями · до 8 игроков", "subtitle"));
             Button(main, s, "Играть", () => Show(Screen.Heroes), "item-primary");
             Button(main, s, "Найти матч", () => host.JoinServer()); // онлайн на нашем сервере: до 8 игроков, пустые места — боты

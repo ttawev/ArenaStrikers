@@ -57,6 +57,26 @@
   margin-bottom: -18px;
 }
 
+/* логотип SpellStrike: SPELL — холодная магия, STRIKE — огонь; буквы с лёгким свечением */
+.title-spell {
+  font-size: 92px;
+  color: rgb(140, 228, 255);
+  -unity-text-align: middle-left;
+  letter-spacing: 2px;
+  text-shadow: 0 0 14px rgba(130, 110, 255, 0.85);
+  margin-bottom: -30px;
+}
+
+.title-strike {
+  font-size: 92px;
+  color: var(--accent);
+  -unity-text-align: middle-left;
+  letter-spacing: 2px;
+  text-shadow: 0 0 14px rgba(255, 90, 30, 0.85);
+  margin-left: 36px;
+  margin-bottom: 10px;
+}
+
 .title-accent {
   font-size: 58px;
   color: var(--accent);

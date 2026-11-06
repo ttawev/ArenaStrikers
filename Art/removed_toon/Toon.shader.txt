@@ -1,0 +1,194 @@
+// Toon-освещение героев: свет ложится ступенями (свет / тень), а не плавно, плюс ободок света по краю и маленький блик.
+// Свойства как у URP/Lit (_BaseMap, _BumpMap, _EmissionMap, _EmissionColor), поэтому перекраска формы и свечение
+// (MaterialPropertyBlock в HeroModel) работают без изменений. Учитывает лунный свет с тенями, прожекторы и огонь Жара.
+// Общие ползунки — глобальные (_Toon*), их задаёт HeroModel.Toon.cs из Inspector → Arena → Hero Art → «Toon».
+Shader "Arena/Toon"
+{
+    Properties
+    {
+        _BaseMap ("Albedo", 2D) = "white" {}
+        _BaseColor ("Color", Color) = (1,1,1,1)
+        _BumpMap ("Normal", 2D) = "bump" {}
+        _EmissionMap ("Emission", 2D) = "black" {}
+        [HDR] _EmissionColor ("Emission Color", Color) = (0,0,0,1)
+    }
+    SubShader
+    {
+        Tags { "RenderType"="Opaque" "RenderPipeline"="UniversalPipeline" "Queue"="Geometry" }
+
+        HLSLINCLUDE
+        #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+        TEXTURE2D(_BaseMap); SAMPLER(sampler_BaseMap);
+        TEXTURE2D(_BumpMap); SAMPLER(sampler_BumpMap);
+        TEXTURE2D(_EmissionMap); SAMPLER(sampler_EmissionMap);
+        CBUFFER_START(UnityPerMaterial)
+            float4 _BaseMap_ST;
+            half4 _BaseColor;
+            half4 _EmissionColor;
+        CBUFFER_END
+        ENDHLSL
+
+        Pass
+        {
+            Name "ToonForward"
+            Tags { "LightMode"="UniversalForward" }
+            Cull Back ZWrite On
+            HLSLPROGRAM
+            #pragma vertex vert
+            #pragma fragment frag
+            #pragma multi_compile _ _MAIN_LIGHT_SHADOWS _MAIN_LIGHT_SHADOWS_CASCADE _MAIN_LIGHT_SHADOWS_SCREEN
+            #pragma multi_compile _ _ADDITIONAL_LIGHTS_VERTEX _ADDITIONAL_LIGHTS
+            #pragma multi_compile _ _CLUSTER_LIGHT_LOOP
+            #pragma multi_compile_fragment _ _ADDITIONAL_LIGHT_SHADOWS
+            #pragma multi_compile_fragment _ _SHADOWS_SOFT _SHADOWS_SOFT_LOW _SHADOWS_SOFT_MEDIUM _SHADOWS_SOFT_HIGH
+            #pragma multi_compile_fog
+            #pragma multi_compile_instancing
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
+
+            // общие ползунки (HeroModel.Toon.cs)
+            half _ToonThreshold, _ToonSoft, _ToonShadowDark, _ToonRim, _ToonRimWidth, _ToonSpec, _ToonNormal, _ToonAmbient, _ToonSaturate;
+            half4 _ToonShadowTint;
+
+            struct Attributes { float4 positionOS : POSITION; float3 normalOS : NORMAL; float4 tangentOS : TANGENT; float2 uv : TEXCOORD0; UNITY_VERTEX_INPUT_INSTANCE_ID };
+            struct Varyings
+            {
+                float4 positionCS : SV_POSITION; float2 uv : TEXCOORD0; float3 positionWS : TEXCOORD1;
+                half3 normalWS : TEXCOORD2; half4 tangentWS : TEXCOORD3; half fog : TEXCOORD4;
+                UNITY_VERTEX_INPUT_INSTANCE_ID UNITY_VERTEX_OUTPUT_STEREO
+            };
+
+            Varyings vert (Attributes v)
+            {
+                Varyings o = (Varyings)0;
+                UNITY_SETUP_INSTANCE_ID(v); UNITY_TRANSFER_INSTANCE_ID(v, o); UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(o);
+                VertexPositionInputs p = GetVertexPositionInputs(v.positionOS.xyz);
+                VertexNormalInputs n = GetVertexNormalInputs(v.normalOS, v.tangentOS);
+                o.positionCS = p.positionCS; o.positionWS = p.positionWS;
+                o.normalWS = n.normalWS; o.tangentWS = half4(n.tangentWS, v.tangentOS.w * GetOddNegativeScale());
+                o.uv = TRANSFORM_TEX(v.uv, _BaseMap);
+                o.fog = ComputeFogFactor(p.positionCS.z);
+                return o;
+            }
+
+            // ступенька: 0 — тень, 1 — свет, с мягкостью _ToonSoft
+            half Band(half x) { return smoothstep(_ToonThreshold - _ToonSoft, _ToonThreshold + _ToonSoft, x); }
+
+            half3 ToonLight(Light l, half3 albedo, half3 N, half3 V, half3 shade)
+            {
+                half ndl = dot(N, l.direction);
+                half lit = Band(ndl * 0.5 + 0.5) * l.shadowAttenuation;   // свет «оборачивается» — тень только на обратной стороне
+                half3 col = l.color * l.distanceAttenuation;
+                half3 c = lerp(shade, albedo, lit) * col;
+                half3 H = normalize(l.direction + V);
+                half spec = step(0.985, dot(N, H)) * lit * _ToonSpec;   // маленький резкий блик
+                return c + spec * col;
+            }
+
+            half4 frag (Varyings i) : SV_Target
+            {
+                UNITY_SETUP_INSTANCE_ID(i);
+                half4 base = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, i.uv) * _BaseColor;
+                half3 albedo = base.rgb;
+                half lum = dot(albedo, half3(0.299, 0.587, 0.114));
+                albedo = max(0, lerp(lum.xxx, albedo, _ToonSaturate));      // мультяшно насыщенные цвета
+
+                half3 nTS = UnpackNormal(SAMPLE_TEXTURE2D(_BumpMap, sampler_BumpMap, i.uv));
+                nTS = normalize(lerp(half3(0, 0, 1), nTS, _ToonNormal));    // рельеф текстуры — слабее, чем у реалистичного света
+                half3 bit = cross(i.normalWS, i.tangentWS.xyz) * i.tangentWS.w;
+                half3 N = normalize(mul(nTS, half3x3(i.tangentWS.xyz, bit, i.normalWS)));
+                half3 V = GetWorldSpaceNormalizeViewDir(i.positionWS);
+
+                half3 shade = albedo * _ToonShadowTint.rgb * (1 - _ToonShadowDark); // цвет тени: холоднее и темнее
+                float4 shadowCoord = TransformWorldToShadowCoord(i.positionWS);
+                Light mainL = GetMainLight(shadowCoord);
+                half3 color = ToonLight(mainL, albedo, N, V, shade);
+
+                #if defined(_ADDITIONAL_LIGHTS)
+                InputData inputData = (InputData)0;
+                inputData.positionWS = i.positionWS; inputData.normalWS = N; inputData.viewDirectionWS = V;
+                inputData.normalizedScreenSpaceUV = GetNormalizedScreenSpaceUV(i.positionCS);
+                half4 shadowMask = half4(1, 1, 1, 1);
+                uint pixelLightCount = GetAdditionalLightsCount();
+                LIGHT_LOOP_BEGIN(pixelLightCount)
+                    Light l = GetAdditionalLight(lightIndex, i.positionWS, shadowMask);
+                    color += ToonLight(l, albedo, N, V, shade * 0);          // прожекторы и огонь добавляют только свет
+                LIGHT_LOOP_END
+                #endif
+
+                color += albedo * SampleSH(N) * _ToonAmbient;                 // ночное небо — чтобы тень не была чёрной
+                half rim = smoothstep(1 - _ToonRimWidth, 1 - _ToonRimWidth + 0.04, 1 - saturate(dot(N, V)));
+                color += rim * _ToonRim * (mainL.color * 0.6 + albedo * 0.4); // светлый ободок по краю силуэта
+                color += SAMPLE_TEXTURE2D(_EmissionMap, sampler_EmissionMap, i.uv).rgb * _EmissionColor.rgb;
+                color = MixFog(color, i.fog);
+                return half4(color, 1);
+            }
+            ENDHLSL
+        }
+
+        Pass
+        {
+            Name "ShadowCaster"
+            Tags { "LightMode"="ShadowCaster" }
+            ZWrite On ZTest LEqual ColorMask 0 Cull Back
+            HLSLPROGRAM
+            #pragma vertex vert
+            #pragma fragment frag
+            #pragma multi_compile_vertex _ _CASTING_PUNCTUAL_LIGHT_SHADOW
+            #pragma multi_compile_instancing
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Shadows.hlsl"
+            float3 _LightDirection; float3 _LightPosition;
+            struct Attributes { float4 positionOS : POSITION; float3 normalOS : NORMAL; UNITY_VERTEX_INPUT_INSTANCE_ID };
+            struct Varyings { float4 positionCS : SV_POSITION; };
+            Varyings vert (Attributes v)
+            {
+                UNITY_SETUP_INSTANCE_ID(v);
+                Varyings o;
+                float3 pWS = TransformObjectToWorld(v.positionOS.xyz);
+                float3 nWS = TransformObjectToWorldNormal(v.normalOS);
+                #if _CASTING_PUNCTUAL_LIGHT_SHADOW
+                float3 ld = normalize(_LightPosition - pWS);
+                #else
+                float3 ld = _LightDirection;
+                #endif
+                o.positionCS = ApplyShadowClamping(TransformWorldToHClip(ApplyShadowBias(pWS, nWS, ld)));
+                return o;
+            }
+            half4 frag (Varyings i) : SV_Target { return 0; }
+            ENDHLSL
+        }
+
+        Pass
+        {
+            Name "DepthOnly"
+            Tags { "LightMode"="DepthOnly" }
+            ZWrite On ColorMask R Cull Back
+            HLSLPROGRAM
+            #pragma vertex vert
+            #pragma fragment frag
+            #pragma multi_compile_instancing
+            struct Attributes { float4 positionOS : POSITION; UNITY_VERTEX_INPUT_INSTANCE_ID };
+            struct Varyings { float4 positionCS : SV_POSITION; };
+            Varyings vert (Attributes v) { UNITY_SETUP_INSTANCE_ID(v); Varyings o; o.positionCS = TransformObjectToHClip(v.positionOS.xyz); return o; }
+            half frag (Varyings i) : SV_Target { return i.positionCS.z; }
+            ENDHLSL
+        }
+
+        Pass
+        {
+            Name "DepthNormals"
+            Tags { "LightMode"="DepthNormals" }
+            ZWrite On Cull Back
+            HLSLPROGRAM
+            #pragma vertex vert
+            #pragma fragment frag
+            #pragma multi_compile_instancing
+            struct Attributes { float4 positionOS : POSITION; float3 normalOS : NORMAL; UNITY_VERTEX_INPUT_INSTANCE_ID };
+            struct Varyings { float4 positionCS : SV_POSITION; half3 normalWS : TEXCOORD0; };
+            Varyings vert (Attributes v) { UNITY_SETUP_INSTANCE_ID(v); Varyings o; o.positionCS = TransformObjectToHClip(v.positionOS.xyz); o.normalWS = TransformObjectToWorldNormal(v.normalOS); return o; }
+            half4 frag (Varyings i) : SV_Target { return half4(NormalizeNormalPerPixel(i.normalWS), 0); }
+            ENDHLSL
+        }
+    }
+    FallBack "Universal Render Pipeline/Lit"
+}

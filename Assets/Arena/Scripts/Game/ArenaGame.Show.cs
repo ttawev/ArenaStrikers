@@ -160,7 +160,7 @@ namespace Arena.Game
                 {
                     float y = h * 0.66f, rise = (1 - EaseOut((e - 0.5f) / 0.5f)) * 24 * k;
                     string mode = Match.ModeName(match.Mode).ToUpperInvariant();
-                    Txt(new Rect(0, y - 46 * k + rise, w, 36 * k), "АРЕНА СТРАЙКЕРОВ  ·  " + mode, 24, new Color(0.85f, 0.9f, 0.9f, 0.85f * a), TextAnchor.MiddleCenter, false);
+                    Txt(new Rect(0, y - 46 * k + rise, w, 36 * k), "SPELLSTRIKE  ·  " + mode, 24, new Color(0.85f, 0.9f, 0.9f, 0.85f * a), TextAnchor.MiddleCenter, false);
                     Txt(new Rect(0, y + rise, w / 2 - 70 * k, 100 * k), "СИНИЕ", 92, A(Color.white, a), TextAnchor.MiddleRight, true, 6, Mat.Home);
                     Txt(new Rect(w / 2 - 70 * k, y + rise, 140 * k, 100 * k), "VS", 44, A(GoldCol, a), TextAnchor.MiddleCenter);
                     Txt(new Rect(w / 2 + 70 * k, y + rise, w / 2 - 70 * k, 100 * k), "КРАСНЫЕ", 92, A(Color.white, a), TextAnchor.MiddleLeft, true, 6, Mat.Away);

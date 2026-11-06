@@ -21,6 +21,7 @@ namespace Arena.Game
         float prevKickCd, prevCharge, prevLob, prevCurve, prevFireT, animLock;
         float prevStun, prevHookCd, prevWallCd, prevTpCd, prevInvisT, recoverT;
         int stunKind;            // 0 — шатается, 1 — упал от рывка, 2 — упал навзничь от огня
+        float endCelT;           // конец матча: сколько уже празднует
         HeroAnim? prevReact;     // празднует / расстроен / конец матча
 
         static Vector3 V(float x, float y, float z) => new Vector3(x * S, y * S, z * S);
@@ -178,11 +179,19 @@ namespace Arena.Game
 
             // ---- после гола и в конце матча: забившая команда празднует, пропустившая расстраивается ----
             HeroAnim? react = null;
+            if (m.Phase != MatchPhase.Ended) endCelT = 0;
             if (m.Phase == MatchPhase.Ended)
             {
                 if (m.ScoreHome != m.ScoreAway && m.Mode != GameMode.Training)
                     react = (p.Team == Team.Home) == (m.ScoreHome > m.ScoreAway) ? HeroAnim.Celebrate : HeroAnim.Defeated;
                 if (m.Mode != GameMode.Training && m.Mvp() == p) react = HeroAnim.Celebrate; // лучший игрок матча празднует, даже если проиграл
+                if (react == HeroAnim.Celebrate)
+                {   // отпраздновал пару раз — спокойная стойка (не крутить одно и то же бесконечно)
+                    endCelT += dt;
+                    float once = model.Length(HeroAnim.Celebrate) / Mathf.Max(0.1f, T.celebrateSpeed);
+                    if (T.endCelebrateTimes > 0 && once > 0 && endCelT > once * T.endCelebrateTimes - T.fade * 2)
+                        react = model.Has(HeroAnim.ShowIdle) ? HeroAnim.ShowIdle : HeroAnim.Idle;
+                }
             }
             else if (m.Intro > 0 && m.IntroStage == 1)
                 react = model.Has(HeroAnim.ShowIdle) ? HeroAnim.ShowIdle : HeroAnim.Idle; // выход команд: стоят в строю собранно, без празднований

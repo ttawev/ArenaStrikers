@@ -322,6 +322,8 @@ namespace Arena.Game
             input.UpdateRumble(dt);
             denyFlash = Mathf.Max(0, denyFlash - dt);
             HeroModel.Tune = heroArt;
+            view.SetHeroLight(heroArt.ambientSide, heroArt.ambientGround, heroArt.fillLight);
+            MvpLightTick(); // экран MVP: свой свет на лучшем игроке (Game/ArenaGame.MvpLight.cs)
             GoalFx.NetPunch = netPunch; GoalFx.NetStiff = netStiff; GoalFx.NetDamp = netDamp; GoalFx.ConfettiCount = confetti;
             StadiumView.GoalFlash = goalFlash; StadiumView.GoalFlashTime = goalFlashTime;
             view.SetBloom(heroArt.bloom);
@@ -738,7 +740,7 @@ namespace Arena.Game
             if (state == State.Playing && net != null && netMenu) Panel(w, h, "Онлайн-матч идёт", "Esc / Start — вернуться в игру     B / Backspace — выйти из комнаты");
             if (toastT > 0) { var c = new Color(1, 1, 1, Mathf.Clamp01(toastT * 2)); Shadowed(new Rect(0, h * 0.08f, w, 30), toast, mid, c); }
             if (state == State.Paused) Panel(w, h, "Пауза", "A / Enter — продолжить     B / Backspace — в меню");
-            if (state == State.Ended && match.Mvp() != null) MvpGui(w, h, EndedHint()); // итоги матча и лучший игрок
+            if (state == State.Ended && match.Mvp() != null) { MvpDimGui(w, h); MvpGui(w, h, EndedHint()); } // итоги матча и лучший игрок
             else if (state == State.Ended)
             {
                 bool away = match.Local.Team == Team.Away; int mine = away ? match.ScoreAway : match.ScoreHome, theirs = away ? match.ScoreHome : match.ScoreAway;
@@ -842,11 +844,13 @@ namespace Arena.Game
             float cx = w - gap * 1.7f - 20, cy = h - gap * 1.6f - 20;
             Color heroCol = you.Hero == Hero.Fire ? Mat.Fire : you.Hero == Hero.Hook ? Mat.Hex("#e2c48a") : you.Hero == Hero.Teleport ? Mat.Blink : you.Hero == Hero.Shade ? Mat.Hex("#b48cff") : you.Hero == Hero.Wall ? Mat.Hex("#9fe8ff") : Mat.Spin;
             if (denyFlash > 0) heroCol = Mat.Away;
+            if (T.stamina && !training) StaminaBar(cx - gap - size * 0.5f - Mathf.Max(10, size * 0.16f) - 14, cy - gap * 0.9f, gap * 1.8f, Mathf.Max(10, size * 0.16f), you);
 
             // A — kick (fill = charge while held), X — lob, B — dash, Y — hero ability
             ActionButton(cx, cy + gap, size, pad ? "A" : "J", "Удар", you.Charging ? you.Charge : (you.KickCd > 0 ? 0.6f : 1), Mat.Accent, you.Charging);
             ActionButton(cx - gap, cy, size, pad ? "X" : "L", "Навес", you.Lobbing ? you.LobCharge : 1, Mat.Hex("#c8ef7a"), you.Lobbing);
-            ActionButton(cx + gap, cy, size, pad ? "B" : "K", "Рывок", 1 - you.DashCd / T.dashCd, Mat.Chalk, you.DashT > 0);
+            bool dashTired = !match.CanDashStamina(you); // мало сил — подкат нельзя: кнопка красная и заполнена по запасу сил
+            ActionButton(cx + gap, cy, size, pad ? "B" : "K", dashTired ? "Нет сил" : "Рывок", dashTired ? Mathf.Clamp01(you.Stamina / Mathf.Max(0.01f, T.staminaDash)) * 0.95f : 1 - you.DashCd / T.dashCd, dashTired ? Mat.Away : Mat.Chalk, you.DashT > 0);
             switch (you.Hero)
             {
                 case Hero.Fire: ActionButton(cx, cy - gap, size, pad ? "Y" : "U", you.FireT > 0 ? "Замах!" : "Огонь", you.FireT > 0 ? 1 : 1 - you.FireCd / T.fireCd, heroCol, you.FireT > 0); break;
@@ -867,6 +871,23 @@ namespace Arena.Game
             string hint = (pad ? "Start — пауза" : "WASD — бег · Esc — пауза") + (training ? (pad ? " · Back — мяч ко мне" : " · R — мяч ко мне") : "")
                         + (training || match.Mode == GameMode.OneVsOne ? "" : pad ? " · RT — дай пас" : " · Q — дай пас");
             // строка-подсказка внизу слева больше не нужна: всё управление — в панели справа (ControlsGui)
+        }
+
+        /// <summary>Силы (стамина): столбик слева от кнопок; ниже черты — герой устал и бежит медленнее (мигает красным).</summary>
+        void StaminaBar(float x, float y, float h, float wbar, Arena.Sim.SimPlayer you)
+        {
+            float k = Mathf.Clamp01(you.Stamina); bool tired = match.Tired(you);
+            GUI.color = new Color(0, 0, 0, 0.55f); GUI.DrawTexture(new Rect(x - 2, y - 2, wbar + 4, h + 4), Texture2D.whiteTexture);
+            Color c = tired ? Color.Lerp(Mat.Away, Color.white, 0.25f + 0.25f * Mathf.Sin(Time.unscaledTime * 10))
+                            : Color.Lerp(new Color(1f, 0.78f, 0.25f), new Color(0.45f, 0.95f, 0.55f), Mathf.InverseLerp(match.T.staminaTired, 1, k));
+            float fh = h * k;
+            GUI.color = c; GUI.DrawTexture(new Rect(x, y + h - fh, wbar, fh), Texture2D.whiteTexture);
+            float ty = y + h - h * match.T.staminaTired; // черта «устал»
+            GUI.color = new Color(1, 1, 1, 0.55f); GUI.DrawTexture(new Rect(x - 3, ty, wbar + 6, 2), Texture2D.whiteTexture);
+            GUI.color = Color.white;
+            var ls = new GUIStyle(small) { alignment = TextAnchor.MiddleCenter, fontSize = 11, fontStyle = FontStyle.Bold, wordWrap = false };
+            ls.normal.textColor = tired ? Mat.Away : Color.white;
+            GUI.Label(new Rect(x - 30, y + h + 6, wbar + 60, 18), tired ? "Устал" : "Силы", ls);
         }
 
         void Bar(ref float y, float x, string label, float k)
@@ -1079,7 +1100,7 @@ namespace Arena.Game
         {
             GUI.color = new Color(0, 0, 0, 0.55f); GUI.DrawTexture(new Rect(0, 0, w, h), Texture2D.whiteTexture); GUI.color = Color.white;
             float cw = Mathf.Min(720, w - 40), x = (w - cw) / 2, y = Mathf.Max(16, h * 0.04f);
-            Shadowed(new Rect(0, y, w, 60), "АРЕНА СТРАЙКЕРОВ", big, Mat.Accent); y += 70;
+            Shadowed(new Rect(0, y, w, 60), "SPELLSTRIKE", big, Mat.Accent); y += 70;
             Shadowed(new Rect(0, y, w, 24), "ранняя версия", small.Center(), new Color(0.6f, 0.7f, 0.68f)); y += 34;
 
             GUI.Label(new Rect(x, y, cw, 24), "Герой  (крестовина ← →)", small); y += 26;

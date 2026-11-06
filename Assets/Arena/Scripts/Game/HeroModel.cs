@@ -72,6 +72,7 @@ namespace Arena.Game
         [Range(0.3f, 4)] public float getUpSpeed = 2.0f;
         [Header("Анимации: гол и конец матча")]
         [Tooltip("Скорость празднования гола")] [Range(0.3f, 2)] public float celebrateSpeed = 1f;
+        [Tooltip("Конец матча: сколько раз повторить празднование, потом спокойная стойка (0 — праздновать без конца)")] [Range(0, 6)] public int endCelebrateTimes = 2;
         [Tooltip("Экран выбора героя: сколько секунд герой празднует, прежде чем перейти в стойку")] [Range(0, 6)] public float showCelebrate = 2.4f;
         [Header("Хвост")]
         [Tooltip("Насколько хвост отклоняется от движения")] [Range(0, 3)] public float tailAmount = 1;
@@ -82,18 +83,16 @@ namespace Arena.Game
         [Tooltip("Куда тянет ветер: 0 — строго назад, больше — назад и вверх")] [Range(0, 1.5f)] public float windUp = 0.35f;
         [Tooltip("Трепыхание на бегу (шарф, капюшон, хвост), градусы на полной скорости")] [Range(0, 60)] public float flutter = 22;
         [Tooltip("Частота трепыхания")] [Range(2, 25)] public float flutterSpeed = 11;
+        [Header("Свет на героях (подсветка теневых сторон)")]
+        [Tooltip("Фоновый свет сбоку: подсвечивает лица и бока героев, отвёрнутые от прожектора (газон не меняет)")] public Color ambientSide = new Color(0.30f, 0.36f, 0.54f, 1);
+        [Tooltip("Фоновый свет снизу: подсвечивает то, что смотрит вниз (под капюшоном, подбородок)")] public Color ambientGround = new Color(0.17f, 0.20f, 0.31f, 1);
+        [Tooltip("Заполняющий свет спереди-снизу, без теней (0 — выкл.)")] [Range(0, 1.5f)] public float fillLight = 0.35f;
         [Header("Огонь и свечение")]
         [Tooltip("Яркость светящихся частей (пламя, трещины лавы). Больше 1 — начинает сиять (bloom)")] [Range(0, 6)] public float glow = 2.6f;
         [Tooltip("Жар: яркость свечения во время суперудара (замах и пока мяч горит). Обычная яркость — «glow» выше")] [Range(0, 12)] public float glowSuper = 5f;
         [Tooltip("Жар: как быстро свечение разгорается и гаснет при суперударе (больше — резче)")] [Range(1, 20)] public float glowRamp = 5f;
         [Tooltip("Мерцание свечения")] [Range(0, 0.6f)] public float glowFlicker = 0.18f;
         [Tooltip("Сила ореола вокруг ярких мест на всём экране")] [Range(0, 3)] public float bloom = 0.8f;
-        [Header("Обводка (toon) — пока отключена в коде (HeroModel: BuildOutline)")]
-        [Tooltip("Контур вокруг героев")] public bool outline = true;
-        [Tooltip("Толщина контура, пикселей (при высоте экрана 1080)")] [Range(0.5f, 8)] public float outlineWidth = 2.5f;
-        [Tooltip("Цвет контура")] public Color outlineColor = new Color(0.04f, 0.05f, 0.1f, 1);
-        [Tooltip("0 — контур своим цветом (тёмный), 1 — в цвет команды")] [Range(0, 1)] public float outlineTeam = 0;
-        [Tooltip("Яркость контура в цвет команды")] [Range(0.2f, 2)] public float outlineTeamBright = 1.1f;
         [Tooltip("Яркость огненного света от героя на землю и плечи")] [Range(0, 6)] public float fireLight = 2.2f;
         [Tooltip("Радиус огненного света, м")] [Range(0.5f, 6)] public float fireLightRange = 2.6f;
         [Tooltip("Искр в секунду от пламени")] [Range(0, 60)] public float embers = 16;
@@ -391,7 +390,6 @@ namespace Arena.Game
                 if (hips != null) hipsRest = Go.transform.InverseTransformPoint(hips.position);
             }
             skinR = skin;
-            // BuildOutline(team); // toon-обводка (HeroModel.Outline.cs) — отложена автором 5.11; вернуть: раскомментировать
             glows = a.Emission != null;
             if (h == Hero.Fire) BuildFireFx(anim);
             if (h == Hero.Wall) BuildFrostFx(anim);
@@ -509,6 +507,8 @@ namespace Arena.Game
 
         /// <summary>1 = normal; more while the fire super-kick winds up.</summary>
         public void SetHeat(float h) => heat = h;
+        /// <summary>Общий множитель свечения (экран MVP делает ярче); каждый кадр задаёт ArenaGame.</summary>
+        public static float GlowBoost = 1;
 
         void TickFx(float dt)
         {
@@ -521,7 +521,7 @@ namespace Arena.Game
                 if (mpb == null) mpb = new MaterialPropertyBlock();
                 skinR.GetPropertyBlock(mpb);
                 float hk = Mathf.Clamp01((heatShown - 1) / 1.6f); // 0 — обычное состояние, 1 — суперудар
-                mpb.SetColor("_EmissionColor", Color.white * (Mathf.Lerp(T.glow, T.glowSuper, hk) * flick));
+                mpb.SetColor("_EmissionColor", Color.white * (Mathf.Lerp(T.glow, T.glowSuper, hk) * flick * GlowBoost));
                 skinR.SetPropertyBlock(mpb);
             }
             if (fireLight != null)
@@ -558,7 +558,6 @@ namespace Arena.Game
         {
             if (dt <= 0 || !Go.activeInHierarchy) return;
             Go.transform.localScale = Vector3.one * (Tune.height * unitScale); // live from the Inspector
-            TickOutline();
             TickFx(dt);
             if (animated)
             {

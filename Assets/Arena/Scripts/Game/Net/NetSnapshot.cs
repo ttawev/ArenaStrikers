@@ -9,7 +9,7 @@ namespace Arena.Game
 {
     public class Snap
     {
-        public const int PF = 27; // чисел на героя
+        public const int PF = 28; // чисел на героя (27 — стамина)
         public float T, Clock, Freeze, Intro;
         public byte ScoreH, ScoreA, Phase, BannerTeam; public bool Banner, Golden;
         public bool HasStats; public byte[] Stats = new byte[8 * 4]; // в конце матча: голы, передачи, сейвы, отборы каждого
@@ -54,7 +54,7 @@ namespace Arena.Game
                 H(w, p.Charge); H(w, p.LobCharge); H(w, p.CurveCharge);
                 H(w, p.HookCd); H(w, p.FireCd); H(w, p.FireT); H(w, p.TpCd); H(w, p.TpBackT);
                 w.WriteValueSafe(p.TpFx); w.WriteValueSafe(p.TpFy);
-                H(w, p.CurveCd); H(w, p.InvisT); H(w, p.InvisCd); H(w, p.WallCd); H(w, p.CallT);
+                H(w, p.CurveCd); H(w, p.InvisT); H(w, p.InvisCd); H(w, p.WallCd); H(w, p.CallT); H(w, p.Stamina);
                 w.WriteValueSafe((byte)((p.Charging ? 1 : 0) | (p.Lobbing ? 2 : 0))); w.WriteValueSafe((sbyte)p.Curving);
             }
             var b = m.Ball;
@@ -115,7 +115,7 @@ namespace Arena.Game
                 P[o] = F(r); P[o + 1] = F(r);
                 for (int k = 2; k <= 19; k++) P[o + k] = H(r);
                 P[o + 20] = F(r); P[o + 21] = F(r);
-                for (int k = 22; k <= 26; k++) P[o + k] = H(r);
+                for (int k = 22; k <= 27; k++) P[o + k] = H(r);
                 r.ReadValueSafe(out byte fl); r.ReadValueSafe(out sbyte cv);
                 if (i < 8) { s.PFlags[i] = fl; s.PCurv[i] = cv; }
             }
@@ -191,7 +191,7 @@ namespace Arena.Game
                 p.DashT = B[o + 6]; p.DashCd = B[o + 7]; p.Stun = B[o + 8]; p.KickCd = B[o + 9]; p.Flash = B[o + 10]; p.GrabCd = B[o + 11];
                 p.Charge = B[o + 12]; p.LobCharge = B[o + 13]; p.CurveCharge = B[o + 14];
                 p.HookCd = B[o + 15]; p.FireCd = B[o + 16]; p.FireT = B[o + 17]; p.TpCd = B[o + 18]; p.TpBackT = B[o + 19];
-                p.TpFx = B[o + 20]; p.TpFy = B[o + 21]; p.CurveCd = B[o + 22]; p.InvisT = B[o + 23]; p.InvisCd = B[o + 24]; p.WallCd = B[o + 25]; p.CallT = B[o + 26];
+                p.TpFx = B[o + 20]; p.TpFy = B[o + 21]; p.CurveCd = B[o + 22]; p.InvisT = B[o + 23]; p.InvisCd = B[o + 24]; p.WallCd = B[o + 25]; p.CallT = B[o + 26]; p.Stamina = B[o + 27];
                 p.Charging = (b.PFlags[i] & 1) != 0; p.Lobbing = (b.PFlags[i] & 2) != 0; p.Curving = b.PCurv[i];
             }
         }

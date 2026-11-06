@@ -169,7 +169,7 @@ MonoBehaviour:
     receiveAnySide: 1
     lobMin: 250
     lobMax: 1150
-    lobTime: 1
+    lobTime: 0.6
     lobArc: 1
     hookRange: 520
     hookSpd: 1500

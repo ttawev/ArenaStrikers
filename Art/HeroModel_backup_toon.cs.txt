@@ -1,0 +1,612 @@
+// Rigged hero models (stage 3 art). Each hero lives in Resources/Heroes/<Folder>/:
+//   model.fbx (Mixamo, humanoid), tail.fbx (optional, Blender), albedo.png,
+//   animations are shared: Resources/Heroes/Anim/*.fbx (Mixamo on Y Bot, humanoid) — see ClipFile; the goal celebration is per hero (CelebrateFile).
+// Animations are blended with a small PlayableGraph driven from the sim state — no Animator Controller asset.
+using System;
+using System.Collections.Generic;
+using Arena.Sim;
+using UnityEngine;
+using UnityEngine.Animations;
+using UnityEngine.Playables;
+using Object = UnityEngine.Object;
+
+namespace Arena.Game
+{
+    public enum HeroAnim
+    {
+        Idle, Run, Kick, KickStrong, Dash, Stun,
+        RunMirror,                       // internal: played with Run half a cycle apart
+        Pass, Dribble,                   // football
+        Fall, FallBack, GetUp,           // knocked down by a dash / burnt by fire, getting up
+        Throw, GroundPunch, Spell, Magic,// abilities: hook, ice fissure, invisibility, teleport
+        Celebrate, Sad, Defeated,        // after a goal and at the end of the match
+        ShowIdle,                        // the lively stance on the hero select screen
+        RunBall,                         // running with the ball (Run Forward)
+        RunBack, StrafeL, StrafeR,       // moving while facing elsewhere (keeper watching the ball): backwards, sideways
+    }
+
+    [Serializable]
+    public class HeroArtTuning
+    {
+        [Tooltip("Рост модели на поле, м (с причёской)")] [Range(0.5f, 2)] public float height = 1.35f;
+        [Tooltip("Поворот модели вокруг вертикали, если она бегает спиной/боком")] [Range(-180, 180)] public float modelYaw = 0;
+        [Tooltip("Скорость героя, при которой бег проигрывается с обычной скоростью")] [Range(100, 600)] public float runRef = 300;
+        [Tooltip("Плавность переходов между анимациями, с")] [Range(0.02f, 0.4f)] public float fade = 0.12f;
+        [Tooltip("Сколько держать анимацию удара, прежде чем вернуться к бегу, с")] [Range(0.1f, 1.5f)] public float kickHold = 0.45f;
+        [Tooltip("Обычный удар: с какой доли анимации начинать (пропустить замах)")] [Range(0, 0.9f)] public float kickStart = 0.3f;
+        [Range(0.3f, 3)] public float kickSpeed = 1.4f;
+        [Tooltip("Сильный удар/навес: с какой доли анимации начинать")] [Range(0, 0.9f)] public float strongStart = 0.4f;
+        [Range(0.3f, 3)] public float strongSpeed = 1.3f;
+        [Tooltip("Огненный суперудар: замах начинается с этой доли анимации")] [Range(0, 0.9f)] public float fireStart = 0.15f;
+        [Range(0.3f, 3)] public float fireSpeed = 1.2f;
+        [Tooltip("Рывок: с какой доли анимации подката начинать")] [Range(0, 0.9f)] public float dashStart = 0.15f;
+        [Range(0.3f, 3)] public float dashSpeed = 1.6f;
+        [Header("Анимации: пас, ведение, способности")]
+        [Tooltip("Удар слабее этой доли заряда играется как пас щёчкой (а не удар с замаха)")] [Range(0, 1)] public float passMax = 0.35f;
+        [Tooltip("Пас: с какой доли анимации начинать")] [Range(0, 0.9f)] public float passStart = 0.2f;
+        [Range(0.3f, 3)] public float passSpeed = 1.5f;
+        [Tooltip("С мячом — бег Run Forward (главнее ведения)")] public bool runBall = true;
+        [Tooltip("Скорость героя, при которой бег с мячом проигрывается с обычной скоростью")] [Range(80, 500)] public float runBallRef = 210;
+        [Tooltip("Бег спиной вперёд и приставным шагом, когда герой смотрит не туда, куда движется (вратарь следит за мячом)")] public bool strafe = true;
+        [Tooltip("Насколько направление движения должно отличаться от взгляда, чтобы включить бег спиной/вбок, градусы")] [Range(20, 80)] public float strafeAngle = 50;
+        [Tooltip("Скорость героя, при которой бег спиной проигрывается с обычной скоростью")] [Range(80, 500)] public float runBackRef = 220;
+        [Tooltip("Скорость героя, при которой приставной шаг проигрывается с обычной скоростью")] [Range(80, 500)] public float strafeRef = 240;
+        [Tooltip("Если бег с мячом выключен: вести мяч анимацией ведения Dribble (выкл — обычный бег)")] public bool dribble = true;
+        [Tooltip("Скорость героя, при которой ведение проигрывается с обычной скоростью")] [Range(80, 500)] public float dribbleRef = 190;
+        [Tooltip("Сколько держать анимацию способности, прежде чем вернуться к бегу, с")] [Range(0.1f, 2)] public float abilityHold = 0.55f;
+        [Tooltip("Багор, бросок крюка: с какой доли анимации начинать")] [Range(0, 0.9f)] public float throwStart = 0.2f;
+        [Range(0.3f, 3)] public float throwSpeed = 1.6f;
+        [Tooltip("Стена, удар по земле: с какой доли анимации начинать")] [Range(0, 0.9f)] public float punchStart = 0f;
+        [Range(0.3f, 3)] public float punchSpeed = 1.5f;
+        [Tooltip("Тень, заклинание: с какой доли анимации начинать")] [Range(0, 0.9f)] public float spellStart = 0.45f;
+        [Range(0.3f, 3)] public float spellSpeed = 1.5f;
+        [Tooltip("Миг, взмах после телепорта: скорость")] [Range(0.3f, 3)] public float magicSpeed = 1.2f;
+        [Header("Анимации: падение и подъём")]
+        [Tooltip("Оглушение длиннее этого (рывок, огонь) — герой падает; короче (крюк) — шатается")] [Range(0, 2)] public float fallStun = 0.6f;
+        [Tooltip("Падение от рывка: с какой доли анимации начинать")] [Range(0, 0.9f)] public float fallStart = 0.15f;
+        [Range(0.3f, 4)] public float fallSpeed = 1.6f;
+        [Tooltip("Падение от огня (навзничь): с какой доли анимации начинать")] [Range(0, 0.9f)] public float fallBackStart = 0.1f;
+        [Range(0.3f, 4)] public float fallBackSpeed = 1.4f;
+        [Tooltip("За сколько секунд до конца оглушения начинать вставать")] [Range(0, 1.5f)] public float getUpLead = 0.3f;
+        [Tooltip("Подъём: с какой доли анимации начинать (пропустить лежание)")] [Range(0, 0.6f)] public float getUpStart = 0.12f;
+        [Range(0.3f, 4)] public float getUpSpeed = 2.0f;
+        [Header("Анимации: гол и конец матча")]
+        [Tooltip("Скорость празднования гола")] [Range(0.3f, 2)] public float celebrateSpeed = 1f;
+        [Tooltip("Экран выбора героя: сколько секунд герой празднует, прежде чем перейти в стойку")] [Range(0, 6)] public float showCelebrate = 2.4f;
+        [Header("Хвост")]
+        [Tooltip("Насколько хвост отклоняется от движения")] [Range(0, 3)] public float tailAmount = 1;
+        [Range(5, 200)] public float tailStiff = 70;
+        [Range(0, 30)] public float tailDamp = 9;
+        [Tooltip("Помахивание хвостом, градусы")] [Range(0, 30)] public float tailWag = 8;
+        [Tooltip("Насколько шарф/капюшон/хвост поднимаются ветром на бегу (0 — висят)")] [Range(0, 1.5f)] public float windLift = 0.8f;
+        [Tooltip("Куда тянет ветер: 0 — строго назад, больше — назад и вверх")] [Range(0, 1.5f)] public float windUp = 0.35f;
+        [Tooltip("Трепыхание на бегу (шарф, капюшон, хвост), градусы на полной скорости")] [Range(0, 60)] public float flutter = 22;
+        [Tooltip("Частота трепыхания")] [Range(2, 25)] public float flutterSpeed = 11;
+        [Header("Огонь и свечение")]
+        [Tooltip("Яркость светящихся частей (пламя, трещины лавы). Больше 1 — начинает сиять (bloom)")] [Range(0, 6)] public float glow = 2.6f;
+        [Tooltip("Жар: яркость свечения во время суперудара (замах и пока мяч горит). Обычная яркость — «glow» выше")] [Range(0, 12)] public float glowSuper = 5f;
+        [Tooltip("Жар: как быстро свечение разгорается и гаснет при суперударе (больше — резче)")] [Range(1, 20)] public float glowRamp = 5f;
+        [Tooltip("Мерцание свечения")] [Range(0, 0.6f)] public float glowFlicker = 0.18f;
+        [Tooltip("Сила ореола вокруг ярких мест на всём экране")] [Range(0, 3)] public float bloom = 0.8f;
+        [Header("Обводка (toon) — пока отключена в коде (HeroModel: BuildOutline)")]
+        [Tooltip("Контур вокруг героев")] public bool outline = true;
+        [Tooltip("Толщина контура, пикселей (при высоте экрана 1080)")] [Range(0.5f, 8)] public float outlineWidth = 2.5f;
+        [Tooltip("Цвет контура")] public Color outlineColor = new Color(0.04f, 0.05f, 0.1f, 1);
+        [Tooltip("0 — контур своим цветом (тёмный), 1 — в цвет команды")] [Range(0, 1)] public float outlineTeam = 0;
+        [Tooltip("Яркость контура в цвет команды")] [Range(0.2f, 2)] public float outlineTeamBright = 1.1f;
+        [Tooltip("Яркость огненного света от героя на землю и плечи")] [Range(0, 6)] public float fireLight = 2.2f;
+        [Tooltip("Радиус огненного света, м")] [Range(0.5f, 6)] public float fireLightRange = 2.6f;
+        [Tooltip("Искр в секунду от пламени")] [Range(0, 60)] public float embers = 16;
+        [Header("Лёд (Стена)")]
+        [Tooltip("Снежинок инея в секунду с каждого плеча")] [Range(0, 40)] public float frost = 7;
+        [Header("Предметы: багор Багора")]
+        [Tooltip("Багор: размер багра")] [Range(0.3f, 2.5f)] public float hookScale = 1f;
+        [Tooltip("Багор: наклон багра вверх/вниз, градусы")] [Range(-90, 90)] public float hookPitch = -10;
+        [Tooltip("Багор: поворот багра влево/вправо, градусы")] [Range(-90, 90)] public float hookYaw = 0;
+        [Tooltip("Багор: поворот крюка вокруг древка, градусы")] [Range(-180, 180)] public float hookRoll = 0;
+        [Tooltip("Багор: сдвинуть хват вдоль древка, м (плюс — держит ближе к крюку)")] [Range(-0.3f, 0.3f)] public float hookGrip = 0;
+        [Tooltip("Развернуть хвост на 180° (если модель в Mixamo поворачивали). Применяется к новому матчу.")] public bool tailFlip = true;
+    }
+
+    public partial class HeroModel
+    {
+        static readonly string[] Folder = { "Jar", "Bagor", "Mig", "Vihr", "Ten", "Stena" };
+        // one entry per HeroAnim; null = per hero (CelebrateFile)
+        static readonly string[] ClipFile = { "idle", "run", "kick", "kick_strong", "dash", "stun", "run",
+            "pass", "dribble", "fall", "fall_back", "get_up", "throw", "ground_punch", "spell", "magic", null, "sad", "defeated", "idle_show", "run_ball", "run_back", "strafe_left", "strafe_right" };
+        static readonly string[] ClipName = { "idle", "run", "kick", "kick_strong", "dash", "stun", "run_mirror",
+            "pass", "dribble", "fall", "fall_back", "get_up", "throw", "ground_punch", "spell", "magic", null, "sad", "defeated", "idle_show", "run_ball", "run_back", "strafe_left", "strafe_right" };
+        // свой танец после гола у каждого героя: Жар, Багор, Миг, Вихрь, Тень, Стена
+        static readonly string[] CelebrateFile = { "cel_victory", "cel_fist_pump", "cel_hip_hop", "cel_cheering", "cel_taunt", "cel_victory_idle" };
+        const int RunMirror = (int)HeroAnim.RunMirror; // played together with Run, half a cycle apart: averages out any limp in the source clip
+        // clips that walk away from the spot (falls, dribble): the hips are held over the hero, the sim decides where he is
+        static readonly HeroAnim[] PinnedAnims = { HeroAnim.Dribble, HeroAnim.Fall, HeroAnim.FallBack, HeroAnim.GetUp };
+        static readonly string[] Missing = new string[1];
+
+        static HeroAnim Fallback(HeroAnim s)
+        {
+            switch (s)
+            {
+                case HeroAnim.Pass: return HeroAnim.Kick;
+                case HeroAnim.Dribble: case HeroAnim.RunBall: case HeroAnim.RunBack: case HeroAnim.StrafeL: case HeroAnim.StrafeR: return HeroAnim.Run;
+                case HeroAnim.Fall: case HeroAnim.FallBack: case HeroAnim.GetUp: return HeroAnim.Stun;
+                case HeroAnim.Throw: case HeroAnim.GroundPunch: return HeroAnim.KickStrong;
+                default: return HeroAnim.Idle;
+            }
+        }
+
+        public static HeroArtTuning Tune = new HeroArtTuning();
+        public static float FrameDt; // set by ArenaGame each frame; 0 while paused or in hitstop
+
+        class Art
+        {
+            public GameObject Model, Tail; public Texture2D Albedo, Normal, Emission;
+            public AnimationClip[] Clips; public readonly Material[] TeamMat = new Material[2];
+            public readonly Dictionary<string, Material>[] Named = { new Dictionary<string, Material>(), new Dictionary<string, Material>() };
+        }
+        static readonly Dictionary<Hero, Art> cache = new Dictionary<Hero, Art>();
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void ResetStatics() { cache.Clear(); Tune = new HeroArtTuning(); FrameDt = 0; Missing[0] = null; }
+
+        static Art Load(Hero h)
+        {
+            if (cache.TryGetValue(h, out var a)) return a; // null = no art for this hero yet
+            int i = (int)h;
+            if (i < Folder.Length)
+            {
+                string dir = "Heroes/" + Folder[i] + "/";
+                var model = Resources.Load<GameObject>(dir + "model");
+                if (model != null)
+                {
+                    a = new Art { Model = model, Tail = Resources.Load<GameObject>(dir + "tail"), Albedo = Resources.Load<Texture2D>(dir + "albedo"), Normal = Resources.Load<Texture2D>(dir + "normal"), Clips = new AnimationClip[ClipFile.Length] };
+                    string missing = "";
+                    for (int c = 0; c < ClipFile.Length; c++)
+                    {
+                        string file = ClipFile[c] ?? (i < CelebrateFile.Length ? CelebrateFile[i] : "cel_cheering");
+                        string clipName = ClipName[c] ?? file;
+                        var all = Resources.LoadAll<AnimationClip>("Heroes/Anim/" + file); // shared by every hero
+                        a.Clips[c] = System.Array.Find(all, x => x.name == clipName);
+                        if (a.Clips[c] == null && c != RunMirror) a.Clips[c] = System.Array.Find(all, x => !x.name.StartsWith("__preview__"));
+                        if (a.Clips[c] == null && c != RunMirror) missing += " " + file;
+                    }
+                    if (missing != "" && Missing[0] != missing) { Missing[0] = missing; Debug.LogWarning("[Arena] нет анимаций (будет запасная):" + missing); }
+                    a.Emission = MakeEmission(a.Albedo, h);
+                    if (a.Clips[0] == null) Debug.LogWarning("[Arena] " + dir + "idle: нет анимации, модель будет стоять в Т-позе");
+                }
+            }
+            cache[h] = a;
+            return a;
+        }
+
+        // which texture colours glow, per hero: hue from..to (0..1), min saturation, min brightness
+        static readonly Vector4[] GlowRule = {
+            new Vector4(0.045f, 0.19f, 0.3f, 0.72f), // Жар: пламя и лава
+            Vector4.zero, Vector4.zero, Vector4.zero, // Багор, Миг, Вихрь — пока без свечения
+            new Vector4(0.44f, 0.58f, 0.2f, 0.75f),  // Тень: голубые глаза
+            new Vector4(0.48f, 0.555f, 0.12f, 0.8f), // Стена: ледяные кристаллы (шарф и кожа — чуть другой оттенок, не светятся)
+        };
+
+        // Форма перекрашивается в цвет команды по белым/серым пикселям. У Мига белый мех (морда, грудь, кончик хвоста),
+        // у Стены бледная кожа — для них форма только холодных серых оттенков (не ниже этого), тёплый мех и голубая кожа остаются.
+        static readonly float[] KitHueMin = { 0, 0, 0.55f, 0, 0, 0.64f };
+
+        static Texture2D MakeEmission(Texture2D src, Hero h)
+        {
+            int i = (int)h;
+            if (src == null || !src.isReadable || i >= GlowRule.Length) return null;
+            var r = GlowRule[i];
+            if (r == Vector4.zero) return null;
+            var px = src.GetPixels32();
+            var em = new Color32[px.Length];
+            for (int k = 0; k < px.Length; k++)
+            {
+                var c = px[k];
+                int mx = Math.Max(c.r, Math.Max(c.g, c.b)), mn = Math.Min(c.r, Math.Min(c.g, c.b)), d = mx - mn;
+                if (d == 0) continue;
+                float hue;
+                if (mx == c.r) hue = ((c.g - c.b) / (float)d) / 6f; else if (mx == c.g) hue = ((c.b - c.r) / (float)d + 2) / 6f; else hue = ((c.r - c.g) / (float)d + 4) / 6f;
+                if (hue < 0) hue += 1;
+                float v = mx / 255f, sat = d / (float)mx;
+                float w = Mathf.Clamp01((hue - r.x) / 0.02f) * Mathf.Clamp01((r.y - hue) / 0.03f) * Mathf.Clamp01((sat - r.z) / 0.15f) * Mathf.Clamp01((v - r.w) / 0.12f);
+                if (w > 0) em[k] = new Color32((byte)(c.r * w), (byte)(c.g * w), (byte)(c.b * w), 255);
+            }
+            var tex = new Texture2D(src.width, src.height, TextureFormat.RGBA32, true) { name = src.name + "_glow" };
+            tex.SetPixels32(em); tex.Apply(true, true);
+            return tex;
+        }
+
+        /// <summary>White/grey kit pixels (low saturation, bright) are recoloured to the team colour.</summary>
+        static Material MakeMat(Texture2D src, Texture2D normal, Texture2D emission, Team team, Hero h)
+        {
+            if (src == null) return Mat.Solid(Color.white);
+            Texture2D tex = src;
+            if (src.isReadable)
+            {
+                Color tc = team == Team.Home ? Mat.Home : Mat.Away;
+                float hueMin = (int)h < KitHueMin.Length ? KitHueMin[(int)h] : 0;
+                var px = src.GetPixels32();
+                for (int i = 0; i < px.Length; i++)
+                {
+                    var c = px[i];
+                    int mx = Math.Max(c.r, Math.Max(c.g, c.b)), mn = Math.Min(c.r, Math.Min(c.g, c.b));
+                    float v = mx / 255f, s = mx == 0 ? 0 : (mx - mn) / (float)mx;
+                    float k = Mathf.Clamp01((0.2f - s) / 0.08f) * Mathf.Clamp01((v - 0.4f) / 0.2f);
+                    if (k <= 0) continue;
+                    if (hueMin > 0 && s > 0.02f)
+                    {
+                        int d = mx - mn; float hue;
+                        if (mx == c.r) hue = ((c.g - c.b) / (float)d) / 6f; else if (mx == c.g) hue = ((c.b - c.r) / (float)d + 2) / 6f; else hue = ((c.r - c.g) / (float)d + 4) / 6f;
+                        if (hue < 0) hue += 1;
+                        k *= Mathf.Clamp01((hue - hueMin) / 0.02f) * Mathf.Clamp01((0.2f - s) / 0.08f);
+                        if (k <= 0) continue;
+                    }
+                    float l = Mathf.Min(1, v * 1.08f);
+                    px[i] = new Color32((byte)Mathf.Lerp(c.r, 255 * tc.r * l, k), (byte)Mathf.Lerp(c.g, 255 * tc.g * l, k), (byte)Mathf.Lerp(c.b, 255 * tc.b * l, k), c.a);
+                }
+                tex = new Texture2D(src.width, src.height, TextureFormat.RGBA32, true) { name = src.name + "_" + team };
+                tex.SetPixels32(px); tex.Apply(true, true);
+            }
+            var m = Mat.Textured(tex, 0.1f, normal);
+            if (emission != null)
+            {
+                m.SetTexture("_EmissionMap", emission);
+                m.SetColor("_EmissionColor", Color.white * Tune.glow);
+                m.EnableKeyword("_EMISSION");
+            }
+            return m;
+        }
+
+        /// <summary>Models built in Blender use named flat-colour materials: Kit = shirt/socks (team colour),
+        /// KitShorts = shorts (darker team colour), Glow* = unlit (fire, lava), anything else keeps its colour.</summary>
+        static Material NamedMat(Art a, Material src, Team team)
+        {
+            string name = src != null ? src.name.Replace(" (Instance)", "") : "?";
+            var dict = a.Named[(int)team];
+            if (dict.TryGetValue(name, out var m) && m != null) return m;
+            Color c = src == null ? Color.white : src.HasProperty("_BaseColor") ? src.GetColor("_BaseColor") : src.color;
+            Color tc = team == Team.Home ? Mat.Home : Mat.Away;
+            if (name.StartsWith("KitShorts")) m = Mat.Solid(Color.Lerp(tc, Color.black, 0.45f));
+            else if (name.StartsWith("Kit")) m = Mat.Solid(tc);
+            else if (name.StartsWith("Glow")) m = Mat.Glow(c);
+            else m = Mat.Solid(c);
+            dict[name] = m;
+            return m;
+        }
+
+        public static HeroModel Create(Hero h, Team team, Transform parent)
+        {
+            var a = Load(h);
+            return a == null ? null : new HeroModel(a, h, team, parent);
+        }
+
+        public readonly GameObject Go;
+        readonly PlayableGraph graph;
+        readonly AnimationMixerPlayable mixer;
+        readonly AnimationClipPlayable[] plays;
+        readonly float[] w, len; readonly bool[] loops, has, pinned;
+        Transform hips; Vector3 hipsRest; // hips in model space at rest (idle), for PinnedAnims
+        readonly bool animated, hasMirror;
+        readonly float unitScale; // scale for a 1 m tall model
+        HeroAnim cur = HeroAnim.Idle; float fadeRate = 10;
+        readonly List<Transform> tails = new List<Transform>(); readonly List<Quaternion> tailRests = new List<Quaternion>();
+        readonly List<int> chainPos = new List<int>(), chainLen = new List<int>(); // place of each bone in its chain
+        readonly List<Vector3> tipLocal = new List<Vector3>(); // each chain bone's direction, in its own space
+        Vector3 tailPrev, windV; float wagT, flutT;
+
+        readonly Hero hero;
+        readonly SkinnedMeshRenderer skinR;
+        readonly bool glows;
+        MaterialPropertyBlock mpb;
+        Light fireLight; ParticleSystem headEmbers, tailEmbers;
+        float heat = 1, heatShown = 1, flickT;
+
+        HeroModel(Art a, Hero h, Team team, Transform parent)
+        {
+            hero = h;
+            Go = Object.Instantiate(a.Model, parent, false); Go.name = "model";
+            Material mat = null;
+            if (a.Albedo != null)
+            {   // textured model (AI-generated): one material, kit recoloured in the texture
+                mat = a.TeamMat[(int)team];
+                if (mat == null) mat = a.TeamMat[(int)team] = MakeMat(a.Albedo, a.Normal, a.Emission, team, h);
+                foreach (var r in Go.GetComponentsInChildren<Renderer>(true)) r.sharedMaterial = mat;
+            }
+            else
+                foreach (var r in Go.GetComponentsInChildren<Renderer>(true))
+                {
+                    var ms = r.sharedMaterials;
+                    for (int i = 0; i < ms.Length; i++) ms[i] = NamedMat(a, ms[i], team);
+                    r.sharedMaterials = ms;
+                }
+            var anim = Go.GetComponent<Animator>();
+
+            // tail: hang it on the hips so it follows the run
+            if (a.Tail != null)
+            {
+                var inst = Object.Instantiate(a.Tail, Go.transform, false);
+                if (Tune.tailFlip) inst.transform.localRotation = Quaternion.Euler(0, 180, 0) * inst.transform.localRotation;
+                var tr = inst.GetComponentInChildren<Renderer>();
+                if (tr != null)
+                {
+                    if (mat != null) tr.sharedMaterial = mat;
+                    var tail = tr.transform; tails.Add(tail);
+                    var hips = anim != null && anim.isHuman ? anim.GetBoneTransform(HumanBodyBones.Hips) : null;
+                    if (hips != null) { tail.SetParent(hips, true); if (inst.transform != tail) Object.Destroy(inst); }
+                }
+            }
+            else
+                foreach (var t in Go.GetComponentsInChildren<Transform>(true))
+                    if (t.name.StartsWith("Tail") || t.name.StartsWith("Scarf")) tails.Add(t); // chains of a Blender-built rig: Tail1.., ScarfL1.., ScarfR1..
+            tails.Sort((x, y) => string.CompareOrdinal(x.name, y.name));
+            var counts = new Dictionary<string, int>();
+            foreach (var t in tails)
+            {
+                tailRests.Add(t.localRotation);
+                string key = t.name.TrimEnd('0', '1', '2', '3', '4', '5', '6', '7', '8', '9');
+                counts.TryGetValue(key, out int c); chainPos.Add(c); counts[key] = c + 1;
+            }
+            foreach (var t in tails) chainLen.Add(counts[t.name.TrimEnd('0', '1', '2', '3', '4', '5', '6', '7', '8', '9')]);
+            for (int i = 0; i < tails.Count; i++)
+            {
+                bool hasNext = i + 1 < tails.Count && tails[i + 1].parent == tails[i];
+                tipLocal.Add(hasNext ? tails[i + 1].localPosition : Quaternion.Inverse(tails[i].localRotation) * tails[i].localPosition);
+            }
+            tailPrev = Go.transform.position;
+            if (!loggedChains.Contains(h)) { loggedChains.Add(h); Debug.LogWarning("[Arena] " + h + ": подвижных костей (хвост/шарф/капюшон) = " + tails.Count); }
+            Go.transform.localRotation = Quaternion.Euler(0, Tune.modelYaw, 0);
+
+            // fit the height
+            var skin = Go.GetComponentInChildren<SkinnedMeshRenderer>();
+            float hgt = skin != null ? skin.bounds.size.y : 1.8f;
+            unitScale = 1 / Mathf.Max(0.01f, hgt);
+            Go.transform.localScale = Vector3.one * (Tune.height * unitScale);
+
+            int n = ClipFile.Length;
+            plays = new AnimationClipPlayable[n]; w = new float[n]; len = new float[n]; loops = new bool[n]; has = new bool[n]; pinned = new bool[n];
+            foreach (var pa in PinnedAnims) pinned[(int)pa] = true;
+            if (anim != null && a.Clips[0] != null)
+            {
+                anim.applyRootMotion = false; anim.runtimeAnimatorController = null;
+                anim.cullingMode = AnimatorCullingMode.AlwaysAnimate;
+                graph = PlayableGraph.Create("hero");
+                graph.SetTimeUpdateMode(DirectorUpdateMode.Manual);
+                var output = AnimationPlayableOutput.Create(graph, "anim", anim);
+                mixer = AnimationMixerPlayable.Create(graph, n);
+                output.SetSourcePlayable(mixer);
+                for (int i = 0; i < n; i++)
+                {
+                    has[i] = a.Clips[i] != null;
+                    var clip = has[i] ? a.Clips[i] : a.Clips[0];
+                    plays[i] = AnimationClipPlayable.Create(graph, clip);
+                    len[i] = clip.length; loops[i] = clip.isLooping;
+                    graph.Connect(plays[i], 0, mixer, i);
+                }
+                hasMirror = a.Clips[RunMirror] != null;
+                w[0] = 1; mixer.SetInputWeight(0, 1);
+                graph.Play(); graph.Evaluate(0);
+                Go.AddComponent<HeroGraphOwner>().Graph = graph;
+                animated = true;
+                hips = anim.isHuman ? anim.GetBoneTransform(HumanBodyBones.Hips) : null;
+                if (hips != null) hipsRest = Go.transform.InverseTransformPoint(hips.position);
+            }
+            skinR = skin;
+            // BuildOutline(team); // toon-обводка (HeroModel.Outline.cs) — отложена автором 5.11; вернуть: раскомментировать
+            glows = a.Emission != null;
+            if (h == Hero.Fire) BuildFireFx(anim);
+            if (h == Hero.Wall) BuildFrostFx(anim);
+            BuildProps(anim);
+        }
+
+        // ---------- огонь Жара: свет, искры ----------
+        static Texture2D dot;
+        static Texture2D Dot()
+        {
+            if (dot != null) return dot;
+            const int N = 32; dot = new Texture2D(N, N, TextureFormat.RGBA32, false) { name = "ember" };
+            var px = new Color32[N * N];
+            for (int y = 0; y < N; y++)
+                for (int x = 0; x < N; x++)
+                {
+                    float d = new Vector2(x - N / 2f + 0.5f, y - N / 2f + 0.5f).magnitude / (N / 2f);
+                    px[y * N + x] = new Color32(255, 255, 255, (byte)(255 * Mathf.Clamp01(1 - d) * Mathf.Clamp01(1 - d)));
+                }
+            dot.SetPixels32(px); dot.Apply();
+            return dot;
+        }
+
+        static Material emberMat;
+        static readonly HashSet<Hero> loggedChains = new HashSet<Hero>();
+        static ParticleSystem Embers(Transform parent, Vector3 worldPos, float radius, float scale)
+        {
+            var go = new GameObject("embers"); go.transform.SetParent(parent, false); go.transform.position = worldPos;
+            var ps = go.AddComponent<ParticleSystem>();
+            ps.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+            var main = ps.main;
+            main.simulationSpace = ParticleSystemSimulationSpace.World; main.loop = true; main.playOnAwake = false; main.maxParticles = 200;
+            main.startLifetime = new ParticleSystem.MinMaxCurve(0.5f, 1.0f);
+            main.startSpeed = new ParticleSystem.MinMaxCurve(0.2f * scale, 0.6f * scale);
+            main.startSize = new ParticleSystem.MinMaxCurve(0.03f * scale, 0.07f * scale);
+            main.gravityModifier = -0.12f * scale;
+            main.startColor = new ParticleSystem.MinMaxGradient(new Color(1f, 0.85f, 0.35f), new Color(1f, 0.4f, 0.08f));
+            var sh = ps.shape; sh.enabled = true; sh.shapeType = ParticleSystemShapeType.Sphere; sh.radius = radius;
+            var vel = ps.velocityOverLifetime; vel.enabled = true; vel.space = ParticleSystemSimulationSpace.World;
+            vel.x = new ParticleSystem.MinMaxCurve(-0.15f * scale, 0.15f * scale); vel.y = new ParticleSystem.MinMaxCurve(0.3f * scale, 0.7f * scale); vel.z = new ParticleSystem.MinMaxCurve(-0.15f * scale, 0.15f * scale);
+            var col = ps.colorOverLifetime; col.enabled = true;
+            var g = new Gradient();
+            g.SetKeys(new[] { new GradientColorKey(new Color(1f, 0.9f, 0.5f), 0), new GradientColorKey(new Color(1f, 0.35f, 0.05f), 1) },
+                      new[] { new GradientAlphaKey(0, 0), new GradientAlphaKey(1, 0.15f), new GradientAlphaKey(0.8f, 0.6f), new GradientAlphaKey(0, 1) });
+            col.color = g;
+            var size = ps.sizeOverLifetime; size.enabled = true; size.size = new ParticleSystem.MinMaxCurve(1, AnimationCurve.Linear(0, 1, 1, 0.3f));
+            var noise = ps.noise; noise.enabled = true; noise.strength = 0.25f * scale; noise.frequency = 2.5f;
+            if (emberMat == null) { emberMat = Mat.ParticleMat(true); emberMat.SetTexture("_BaseMap", Dot()); emberMat.SetColor("_BaseColor", new Color(2.2f, 1.6f, 1.0f, 1)); }
+            ps.GetComponent<ParticleSystemRenderer>().sharedMaterial = emberMat;
+            ps.Play();
+            return ps;
+        }
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void ResetFxStatics() { dot = null; emberMat = null; frostMat = null; loggedChains.Clear(); }
+
+        void BuildFireFx(Animator anim)
+        {
+            float k = Tune.height / 1.35f; // effects are tuned for the default height
+            var head = anim != null && anim.isHuman ? anim.GetBoneTransform(HumanBodyBones.Head) : null;
+            if (head == null) head = Go.transform;
+            Vector3 flameTop = head.position + Vector3.up * 0.22f * k;
+            var lgo = new GameObject("fireLight"); lgo.transform.SetParent(head, false); lgo.transform.position = flameTop;
+            fireLight = lgo.AddComponent<Light>();
+            fireLight.type = LightType.Point; fireLight.color = new Color(1f, 0.55f, 0.2f);
+            fireLight.shadows = LightShadows.None; fireLight.renderMode = LightRenderMode.ForcePixel;
+            headEmbers = Embers(head, flameTop, 0.12f * k, k);
+            if (tails.Count > 0) tailEmbers = Embers(tails[tails.Count - 1], tails[tails.Count - 1].position + Vector3.up * 0.06f * k, 0.04f * k, k * 0.6f);
+        }
+
+        // ---------- иней Стены: с кристаллов на плечах медленно осыпаются голубые искорки ----------
+        static Material frostMat;
+        readonly List<ParticleSystem> frostFx = new List<ParticleSystem>();
+        static ParticleSystem Frost(Transform parent, Vector3 worldPos, float radius, float scale)
+        {
+            var go = new GameObject("frost"); go.transform.SetParent(parent, false); go.transform.position = worldPos;
+            var ps = go.AddComponent<ParticleSystem>();
+            ps.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+            var main = ps.main;
+            main.simulationSpace = ParticleSystemSimulationSpace.World; main.loop = true; main.playOnAwake = false; main.maxParticles = 150;
+            main.startLifetime = new ParticleSystem.MinMaxCurve(0.8f, 1.6f);
+            main.startSpeed = new ParticleSystem.MinMaxCurve(0.02f * scale, 0.12f * scale);
+            main.startSize = new ParticleSystem.MinMaxCurve(0.02f * scale, 0.05f * scale);
+            main.gravityModifier = 0.03f * scale;   // иней падает, а не взлетает, как искры
+            main.startRotation = new ParticleSystem.MinMaxCurve(0, Mathf.PI * 2);
+            main.startColor = new ParticleSystem.MinMaxGradient(new Color(0.85f, 0.97f, 1f), new Color(0.55f, 0.85f, 1f));
+            var sh = ps.shape; sh.enabled = true; sh.shapeType = ParticleSystemShapeType.Sphere; sh.radius = radius;
+            var col = ps.colorOverLifetime; col.enabled = true;
+            var g = new Gradient();
+            g.SetKeys(new[] { new GradientColorKey(Color.white, 0), new GradientColorKey(new Color(0.6f, 0.85f, 1f), 1) },
+                      new[] { new GradientAlphaKey(0, 0), new GradientAlphaKey(0.9f, 0.15f), new GradientAlphaKey(0.6f, 0.6f), new GradientAlphaKey(0, 1) });
+            col.color = g;
+            var size = ps.sizeOverLifetime; size.enabled = true; size.size = new ParticleSystem.MinMaxCurve(1, AnimationCurve.Linear(0, 1, 1, 0.4f));
+            var noise = ps.noise; noise.enabled = true; noise.strength = 0.12f * scale; noise.frequency = 1.5f;
+            if (frostMat == null) { frostMat = Mat.ParticleMat(true); frostMat.SetTexture("_BaseMap", Dot()); frostMat.SetColor("_BaseColor", new Color(1.4f, 1.8f, 2.2f, 1)); }
+            ps.GetComponent<ParticleSystemRenderer>().sharedMaterial = frostMat;
+            ps.Play();
+            return ps;
+        }
+
+        void BuildFrostFx(Animator anim)
+        {
+            if (anim == null || !anim.isHuman) return;
+            float k = Tune.height / 1.35f;
+            foreach (var b in new[] { HumanBodyBones.LeftShoulder, HumanBodyBones.RightShoulder })
+            {
+                var t = anim.GetBoneTransform(b);
+                if (t == null) continue;
+                var arm = anim.GetBoneTransform(b == HumanBodyBones.LeftShoulder ? HumanBodyBones.LeftUpperArm : HumanBodyBones.RightUpperArm);
+                // кристаллы — над плечевым суставом, чуть ближе к шее
+                Vector3 p = (arm != null ? Vector3.Lerp(t.position, arm.position, 0.8f) : t.position) + Vector3.up * 0.18f * k;
+                frostFx.Add(Frost(t, p, 0.12f * k, k));
+            }
+        }
+
+        /// <summary>1 = normal; more while the fire super-kick winds up.</summary>
+        public void SetHeat(float h) => heat = h;
+
+        void TickFx(float dt)
+        {
+            var T = Tune;
+            heatShown = Mathf.MoveTowards(heatShown, heat, dt * T.glowRamp * (heat > heatShown ? 1.6f : 0.6f)); // вспыхивает быстро, гаснет плавно
+            flickT += dt;
+            float flick = 1 + T.glowFlicker * (Mathf.PerlinNoise(flickT * 7, 0.3f) - 0.5f) * 2;
+            if (glows && skinR != null)
+            {
+                if (mpb == null) mpb = new MaterialPropertyBlock();
+                skinR.GetPropertyBlock(mpb);
+                float hk = Mathf.Clamp01((heatShown - 1) / 1.6f); // 0 — обычное состояние, 1 — суперудар
+                mpb.SetColor("_EmissionColor", Color.white * (Mathf.Lerp(T.glow, T.glowSuper, hk) * flick));
+                skinR.SetPropertyBlock(mpb);
+            }
+            if (fireLight != null)
+            {
+                fireLight.intensity = T.fireLight * flick * (0.6f + 0.4f * heatShown);
+                fireLight.range = T.fireLightRange * (0.8f + 0.2f * heatShown);
+            }
+            foreach (var f in frostFx) if (f != null) { var em = f.emission; em.rateOverTime = T.frost; }
+            if (headEmbers != null) { var em = headEmbers.emission; em.rateOverTime = T.embers * heatShown * heatShown; }
+            if (tailEmbers != null) { var em = tailEmbers.emission; em.rateOverTime = T.embers * 0.35f * heatShown; }
+        }
+
+        /// <summary>Is there a real clip for this animation (not a stand-in)?</summary>
+        public bool Has(HeroAnim s) => animated && has[(int)s];
+        /// <summary>Clip length, s (at speed 1).</summary>
+        public float Length(HeroAnim s) => animated ? len[(int)s] : 0;
+
+        public void Play(HeroAnim s, float fade, bool restart = false, float speed = 1, float startAt = 0)
+        {
+            if (!animated) return;
+            for (int k = 0; k < 3 && !has[(int)s] && s != HeroAnim.Idle; k++) { s = Fallback(s); startAt = 0; }
+            int i = (int)s;
+            if (s != cur || restart)
+            {
+                if (restart || !loops[i]) plays[i].SetTime(startAt * len[i]);
+                if (s == HeroAnim.Run && hasMirror) plays[RunMirror].SetTime(plays[i].GetTime() + len[RunMirror] * 0.5f);
+                cur = s; fadeRate = 1f / Mathf.Max(0.01f, fade);
+            }
+            plays[i].SetSpeed(speed);
+            if (s == HeroAnim.Run && hasMirror) plays[RunMirror].SetSpeed(speed);
+        }
+
+        public void Tick(float dt)
+        {
+            if (dt <= 0 || !Go.activeInHierarchy) return;
+            Go.transform.localScale = Vector3.one * (Tune.height * unitScale); // live from the Inspector
+            TickOutline();
+            TickFx(dt);
+            if (animated)
+            {
+                float sum = 0;
+                for (int i = 0; i < w.Length; i++)
+                {
+                    float target = i == (int)cur ? 1 : 0;
+                    if (hasMirror && cur == HeroAnim.Run && (i == (int)HeroAnim.Run || i == RunMirror)) target = 0.5f;
+                    w[i] = Mathf.MoveTowards(w[i], target, dt * fadeRate); sum += w[i];
+                }
+                float pin = 0;
+                for (int i = 0; i < w.Length; i++) { float wi = sum > 0 ? w[i] / sum : 0; mixer.SetInputWeight(i, wi); if (pinned[i]) pin += wi; }
+                Go.transform.localPosition = Vector3.zero;
+                graph.Evaluate(dt);
+                if (pin > 0.001f && hips != null)
+                {   // hold the hips over the hero: falls and the dribble walk away from the spot in the source clip
+                    Vector3 d = Go.transform.InverseTransformPoint(hips.position) - hipsRest; d.y = 0;
+                    Vector3 off = Go.transform.parent.InverseTransformVector(Go.transform.TransformVector(d)); off.y = 0;
+                    Go.transform.localPosition = -off * Mathf.Clamp01(pin);
+                }
+            }
+            Go.transform.localRotation = Quaternion.Euler(0, Tune.modelYaw, 0);
+            if (tails.Count > 0)
+            {   // wind: running makes scarf / hood / tail stream behind, lift and flap; standing still they hang and sway a little
+                var T = Tune;
+                Vector3 vel = (Go.transform.position - tailPrev) / dt; tailPrev = Go.transform.position; vel.y = 0;
+                windV = Vector3.Lerp(windV, vel, 1 - Mathf.Exp(-dt * T.tailStiff * 0.1f)); // lags behind turns and stops
+                float run = Mathf.Clamp01(windV.magnitude / 3.5f);                         // 3.5 m/s ≈ full run
+                wagT += dt * 5;
+                flutT += dt * T.flutterSpeed * (0.5f + 0.5f * run);
+                Vector3 back = windV.sqrMagnitude > 1e-4f ? -windV.normalized : -Go.transform.forward;
+                Vector3 wind = (back + Vector3.up * T.windUp).normalized;
+                Vector3 side = Vector3.Cross(Vector3.up, back).normalized;
+                for (int i = 0; i < tails.Count; i++) tails[i].localRotation = tailRests[i];
+                for (int i = 0; i < tails.Count; i++) // parents come first in the list, so children follow the bend
+                {
+                    var t = tails[i]; int ci = chainPos[i], n = chainLen[i];
+                    float lift = Mathf.Clamp01(T.windLift * T.tailAmount * run * (t.name.StartsWith("Scarf") ? 1 : 0.5f) * (0.45f + 0.1f * ci));
+                    Vector3 dir = t.TransformDirection(tipLocal[i]);
+                    if (lift > 0 && dir.sqrMagnitude > 1e-8f)
+                        t.rotation = Quaternion.FromToRotation(dir, Vector3.Slerp(dir.normalized, wind, lift)) * t.rotation;
+                    float fl = T.flutter * run * (1 + ci * 0.6f) / n;
+                    float wag = Mathf.Sin(wagT - ci * 0.6f) * T.tailWag * (1 - run * 0.7f) * 2f / (n + 1);
+                    t.rotation = Quaternion.AngleAxis(Mathf.Sin(flutT - ci * 1.1f) * fl, side)
+                               * Quaternion.AngleAxis(Mathf.Sin(flutT * 0.77f - ci * 0.9f + 1.3f) * fl * 0.6f + wag, Vector3.up) * t.rotation;
+                }
+            }
+            TickProps(dt);
+        }
+    }
+}

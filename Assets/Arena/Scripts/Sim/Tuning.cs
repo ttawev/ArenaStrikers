@@ -27,13 +27,26 @@ namespace Arena.Sim
         [Tooltip("Вратарь: с какого расстояния до ворот выходит навстречу сопернику с мячом")] [Range(300, 1000)] public float keeperRushDist = 720;
         [Tooltip("Вратарь: с какого расстояния до соперника выбивает мяч рывком из ног")] [Range(60, 260)] public float keeperTackle = 170;
 
+        [Header("Стамина (силы)")]
+        [Tooltip("Включить стамину: бег, рывок, сильный удар и навес тратят силы; без сил герой бегает медленнее")] public bool stamina = true;
+        [Tooltip("Расход на бег (стик до упора), доля в секунду (0,015 — от полных сил до нуля ~65 с непрерывного бега)")] [Range(0, 0.2f)] public float staminaRun = 0.015f;
+        [Tooltip("Восстановление, когда герой идёт шагом или стоит, доля в секунду")] [Range(0.02f, 0.6f)] public float staminaRegen = 0.25f;
+        [Tooltip("Восстановление трусцой (стик наклонён не до конца), доля в секунду")] [Range(0, 0.3f)] public float staminaJogRegen = 0.1f;
+        [Tooltip("Пауза перед восстановлением после рывка, удара или навеса, с")] [Range(0, 3)] public float staminaDelay = 0.7f;
+        [Tooltip("Рывок (подкат) стоит; если сил меньше — рывок не срабатывает")] [Range(0, 0.6f)] public float staminaDash = 0.18f;
+        [Tooltip("Сильный удар стоит (при полном заряде; удар слабее половины заряда — бесплатно)")] [Range(0, 0.5f)] public float staminaKick = 0.12f;
+        [Tooltip("Навес стоит (при полном заряде; короткий — меньше)")] [Range(0, 0.5f)] public float staminaLob = 0.1f;
+        [Tooltip("Ниже этого запаса герой начинает замедляться")] [Range(0.05f, 0.6f)] public float staminaTired = 0.3f;
+        [Tooltip("Скорость бега без сил, множитель")] [Range(0.4f, 1)] public float staminaSlow = 0.78f;
+        [Tooltip("Сколько сил прибавляется на разводке после гола")] [Range(0, 1)] public float staminaKickoff = 0.3f;
+
         [Header("Приём мяча")]
         [Tooltip("Принимать и отбирать мяч любой стороной (выкл. — только лицом)")] public bool receiveAnySide = true;
 
         [Header("Навес")]
         [Range(100, 600)] public float lobMin = 250;
         [Range(500, 1800)] public float lobMax = 1150;
-        [Tooltip("Время полного заряда навеса, с")] [Range(0.3f, 2)] public float lobTime = 1.0f;
+        [Tooltip("Время полного заряда навеса, с")] [Range(0.3f, 2)] public float lobTime = 0.6f;
         [Tooltip("Высота дуги, множитель")] [Range(0.4f, 2)] public float lobArc = 1.0f;
 
         [Header("Багор — крюк")]

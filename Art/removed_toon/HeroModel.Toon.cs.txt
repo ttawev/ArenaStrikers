@@ -1,0 +1,92 @@
+// Toon-освещение героев: материалы модели (URP/Lit) получают двойника с шейдером Arena/Toon — свет ступенями,
+// ободок по краю, маленький блик. Включение и ползунки — Inspector → Arena → Hero Art → «Toon»;
+// в игре F2 — toon + обводка / только toon / обычный свет (для сравнения).
+using System.Collections.Generic;
+using UnityEngine;
+
+namespace Arena.Game
+{
+    public partial class HeroModel
+    {
+        static Shader toonShader; static bool toonLooked;
+        static readonly Dictionary<Material, Material> toonOf = new Dictionary<Material, Material>();
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void ResetToonStatics() { toonShader = null; toonLooked = false; toonOf.Clear(); }
+
+        static Shader ToonShader
+        {
+            get
+            {
+                if (!toonLooked) { toonLooked = true; toonShader = Shader.Find("Arena/Toon"); if (toonShader == null) Debug.LogWarning("[Arena] нет шейдера Arena/Toon — toon-освещения не будет"); }
+                return toonShader;
+            }
+        }
+
+        /// <summary>Toon-двойник материала (текстуры и свечение те же). Не URP/Lit (свечение без света, прозрачные) — без изменений.</summary>
+        static Material ToonFrom(Material lit)
+        {
+            if (lit == null || ToonShader == null || lit.shader == null || !lit.shader.name.Contains("Lit") || lit.shader.name.Contains("Unlit")) return lit;
+            if (toonOf.TryGetValue(lit, out var t) && t != null) return t;
+            t = new Material(ToonShader) { name = lit.name + "_toon" };
+            if (lit.HasProperty("_BaseMap")) { t.SetTexture("_BaseMap", lit.GetTexture("_BaseMap")); t.SetTextureScale("_BaseMap", lit.GetTextureScale("_BaseMap")); t.SetTextureOffset("_BaseMap", lit.GetTextureOffset("_BaseMap")); }
+            if (lit.HasProperty("_BaseColor")) t.SetColor("_BaseColor", lit.GetColor("_BaseColor"));
+            if (lit.HasProperty("_BumpMap") && lit.IsKeywordEnabled("_NORMALMAP")) t.SetTexture("_BumpMap", lit.GetTexture("_BumpMap"));
+            if (lit.HasProperty("_EmissionMap") && lit.IsKeywordEnabled("_EMISSION")) { t.SetTexture("_EmissionMap", lit.GetTexture("_EmissionMap")); t.SetColor("_EmissionColor", lit.GetColor("_EmissionColor")); }
+            toonOf[lit] = t;
+            return t;
+        }
+
+        class ToonSlot { public Renderer R; public Material[] Lit, Toon; }
+        readonly List<ToonSlot> toonSlots = new List<ToonSlot>();
+
+        /// <summary>Запомнить обычные материалы модели и подготовить toon-двойников (до обводки — её копии не трогаем).</summary>
+        void InitToon()
+        {
+            foreach (var r in Go.GetComponentsInChildren<Renderer>(true))
+            {
+                if (r is ParticleSystemRenderer || r.gameObject.name == "outline") continue;
+                var lit = r.sharedMaterials; var toon = new Material[lit.Length]; bool any = false;
+                for (int i = 0; i < lit.Length; i++) { toon[i] = ToonFrom(lit[i]); any |= toon[i] != lit[i]; }
+                if (any) toonSlots.Add(new ToonSlot { R = r, Lit = lit, Toon = toon });
+            }
+            TickToon();
+        }
+
+        static bool Same(Material[] a, Material[] b)
+        {
+            if (a.Length != b.Length) return false;
+            for (int i = 0; i < a.Length; i++) if (a[i] != b[i]) return false;
+            return true;
+        }
+
+        /// <summary>Каждый кадр: включён ли toon. Чужие материалы (полупрозрачная Тень для своих) не трогаем.</summary>
+        void TickToon()
+        {
+            bool want = Tune.toon && ToonShader != null;
+            foreach (var s in toonSlots)
+            {
+                if (s.R == null) continue;
+                var cur = s.R.sharedMaterials;
+                if (want && Same(cur, s.Lit)) s.R.sharedMaterials = s.Toon;
+                else if (!want && Same(cur, s.Toon)) s.R.sharedMaterials = s.Lit;
+            }
+        }
+
+        /// <summary>Общие ползунки toon-шейдера (раз в кадр, из ArenaGame).</summary>
+        public static void ApplyToonGlobals()
+        {
+            var T = Tune; if (T == null) return;
+            Shader.SetGlobalFloat("_ToonThreshold", T.toonThreshold);
+            Shader.SetGlobalFloat("_ToonSoft", T.toonSoft);
+            Shader.SetGlobalFloat("_ToonShadowDark", T.toonShadowDark);
+            Shader.SetGlobalColor("_ToonShadowTint", T.toonShadowTint);
+            Shader.SetGlobalFloat("_ToonRim", T.toonRim);
+            Shader.SetGlobalFloat("_ToonRimWidth", T.toonRimWidth);
+            Shader.SetGlobalFloat("_ToonSpec", T.toonSpec);
+            Shader.SetGlobalFloat("_ToonNormal", T.toonNormal);
+            Shader.SetGlobalFloat("_ToonAmbient", T.toonAmbient);
+            Shader.SetGlobalFloat("_ToonSaturate", T.toonSaturate);
+        }
+    }
+}

@@ -37,11 +37,14 @@ namespace Arena.Sim
         public float InvisT, InvisCd; // Тень: time left invisible, cooldown
         public float WallCd;          // Стена
         public float CallT;           // «дай пас»: сколько ещё секунд висит метка над героем
+        public float Stamina = 1;     // силы 0..1: бег, рывок, сильный удар и навес тратят; без сил бег медленнее
+        public float StaminaRest;     // пауза перед восстановлением сил после траты, с
+        public int Spot;              // место на разводке в своей команде (0 — у центра); после каждого гола перемешивается
         public float KoX, KoY;        // выход команд: куда бежать к разводке
         public int IntroOrder;        // выход команд: номер в своей команде
         // статистика матча (экран MVP)
         public int Goals, Assists, Saves, Steals;
-        public void ResetStats() { Goals = Assists = Saves = Steals = 0; }
+        public void ResetStats() { Goals = Assists = Saves = Steals = 0; Stamina = 1; StaminaRest = 0; }
         public bool Invisible => InvisT > 0;
         public readonly BotBrain Brain = new BotBrain();
 

@@ -74,7 +74,7 @@ namespace Arena.Game
         public const ushort DirectPort = 7777;
         /// <summary>Версия сетевой игры. УВЕЛИЧИВАТЬ при любом изменении сети (сообщения, снимок) или правил матча —
         /// игроки и сервер с разными версиями не соединятся (друг увидит «обнови игру»).</summary>
-        public const int NetVersion = 5; // 5: правила матча (время, голы) и 3 на 3
+        public const int NetVersion = 7; // 7: навес заряжается быстрее (0,6 с); 6: стамина в снимке, перемешивание мест на разводке; 5: правила матча (время, голы) и 3 на 3
         // история версий сети: 3: «Найти матч» — комнаты на сервере (ServerHub); 4: «дай пас», золотой гол, выход команд, MVP
         public bool Direct { get; private set; }
         public string DirectIp { get; private set; } = "";
@@ -590,7 +590,7 @@ namespace Arena.Game
             if (pred == null || !PredictOn || m.Phase != MatchPhase.Playing || m.Intro > 0) return;
             float px = me.X, py = me.Y;
             me.X = pred.X + errOff.x; me.Y = pred.Y + errOff.y; me.Vx = pred.Vx; me.Vy = pred.Vy; me.Fx = pred.Fx; me.Fy = pred.Fy;
-            me.DashT = pred.DashT; me.DashCd = pred.DashCd;
+            me.DashT = pred.DashT; me.DashCd = pred.DashCd; me.Stamina = pred.Stamina;
             me.Charging = pred.Charging; me.Charge = pred.Charge; me.Lobbing = pred.Lobbing; me.LobCharge = pred.LobCharge;
             me.Curving = pred.Curving; me.CurveCharge = pred.CurveCharge;
             if (m.Ball.Owner == me) { m.Ball.X += me.X - px; m.Ball.Y += me.Y - py; } // мяч у ног — вместе с героем

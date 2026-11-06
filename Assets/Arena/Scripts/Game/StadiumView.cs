@@ -476,7 +476,7 @@ namespace Arena.Game
         readonly List<Board> boards = new List<Board>();
         readonly List<Material> stripMats = new List<Material>();
         TextMesh scoreText;
-        static readonly string[] Msgs = { "АРЕНА СТРАЙКЕРОВ", "ЖАР • БАГОР • МИГ", "ВИХРЬ • ТЕНЬ • СТЕНА", "ИГРАЙ С ДРУЗЬЯМИ" };
+        static readonly string[] Msgs = { "SPELLSTRIKE", "ЖАР • БАГОР • МИГ", "ВИХРЬ • ТЕНЬ • СТЕНА", "ИГРАЙ С ДРУЗЬЯМИ" };
         Font font;
 
         void BuildAds()
