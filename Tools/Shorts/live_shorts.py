@@ -23,7 +23,7 @@ CLIPS = {
     'live3_quick':   (6, 3.0, 11.5, 1450, 'SPELLS INSTEAD OF TACKLES'),
     'live4_comeback':(8, 41.5, 50.5, 1500, 'PLAY WITH FRIENDS'),
     'live5_win':     (12, 0.8, 10.0, 1450, 'LAST GOAL OF THE MATCH'),
-    'live6_fifth':   (19, 9.5, 18.5, 1500, 'FIVE GOALS IN ONE MATCH'),
+    'live6_fifth':   (19, 10.0, 18.0, 1380, 'FIVE GOALS IN ONE MATCH'),
 }
 
 def track(take):
@@ -50,7 +50,7 @@ def build(name):
         y = ty if y is None else y + (ty - y) * 0.03
         if fr >= f0:
             px = int(min(max(x * SW - cw / 2, 0), SW - cw))
-            py = int(min(max((1 - y) * SH - ch * 0.52, 250), SH - ch - 90))   # 250 / -90 — чтобы полосы интерфейса остались за кадром
+            py = int(min(max((1 - y) * SH - ch * 0.52, 300), SH - ch - 90))   # 250 / -90 — чтобы полосы интерфейса остались за кадром
             cmds.append(f'{(fr - f0) / FPS:.4f} crop x {px}, crop y {py};')
     tmp = tempfile.mkdtemp(); cf = os.path.join(tmp, 'c.txt')
     open(cf, 'w').write('\n'.join(cmds) + '\n')
