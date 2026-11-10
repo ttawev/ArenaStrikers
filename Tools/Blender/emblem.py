@@ -228,6 +228,65 @@ def blade(name, length, width, m):
     me.from_pydata([tuple(-a), tuple(w), tuple(a), tuple(-w)], [], [(0, 1, 2, 3)]); me.materials.append(m)
     return link(bpy.data.objects.new(name, me))
 
+# ---------------------------------------------------------------- сборка значка (используется и в трейлере: ball_trailer.py)
+def build():
+    """Строит значок в текущей сцене (мяч радиуса 1 в начале координат, лицом к −Y, верх +Z).
+    Возвращает словарь частей для анимации: ice, fire, flames, magic, shards, embers, frosts, blades."""
+    parts = {'flames': [], 'magic': [], 'shards': [], 'embers': [], 'frosts': [], 'blades': []}
+    src = ball_mesh()
+    ice_m = [mat_ice_panel('IceHex', srgb((0.55, 0.86, 1.0)), srgb((0.3, 0.85, 1.0)), 3.5),
+             mat_flat('IcePent', srgb((0.02, 0.05, 0.16)), 0.15),
+             mat_flat('IceSeam', srgb((0.02, 0.05, 0.12)), 0.4),
+             mat_flat('IceCore', srgb((0.5, 0.95, 1.0)), 0.3, srgb((0.45, 0.95, 1.0)), 9.0)]
+    fire_m = [mat_fire_panel('FireHex', srgb((0.42, 0.13, 0.04)), 9.0),
+              mat_flat('FirePent', srgb((0.015, 0.008, 0.006)), 0.35),
+              mat_flat('FireSeam', srgb((0.02, 0.01, 0.01)), 0.6),
+              mat_flat('FireCore', srgb((1.0, 0.7, 0.25)), 0.3, srgb((1.0, 0.62, 0.18)), 16.0)]
+    ice = half(src, 'IceHalf', False); fire = half(src, 'FireHalf', True)
+    bpy.data.objects.remove(src, do_unlink=True)
+    for o, ms in ((ice, ice_m), (fire, fire_m)):
+        for i, m in enumerate(ms): o.data.materials[i] = m   # по местам: clear() сбросил бы номера панелей
+
+    # сияние и пламя — светящиеся объёмы вокруг своих половинок
+    # языки пламени и магическое сияние — светящиеся оболочки с рваным краем, видны по контуру своей половины
+    NOFX = os.environ.get('ARENA_NOFX') == '1'
+    for i, (r, k, th) in enumerate(((1.05, 1.0, 0.36), (1.14, 0.9, 0.4), (1.26, 0.75, 0.46), (1.4, 0.55, 0.52), (1.56, 0.4, 0.58))):
+        if NOFX: break
+        parts['flames'].append(shell('Flame%d' % i, r, mat_flame('FlameM%d' % i, srgb((1.0, 0.72, 0.18)), srgb((0.95, 0.16, 0.01)), 1, 0.3, th, i * 7.3, 3.2 * k), N_CUT * GAP))
+    for i, (r, k, th) in enumerate(((1.05, 1.0, 0.42), (1.15, 0.8, 0.48), (1.28, 0.6, 0.55))):
+        if NOFX: break
+        parts['magic'].append(shell('Magic%d' % i, r, mat_flame('MagicM%d' % i, srgb((0.35, 0.92, 1.0)), srgb((0.45, 0.25, 1.0)), -1, 0.55, th, 3.1 + i * 5.7, 2.6 * k), -N_CUT * GAP))
+
+    # ледяные кристаллы по краю ледяной половины (вверх-влево)
+    crys = mat_glass('Crystal', srgb((0.55, 0.92, 1.0)), 2.5)
+    for i, (ang, L_, w) in enumerate(((112, 0.38, 0.12), (130, 0.62, 0.17), (147, 0.48, 0.14), (163, 0.66, 0.18), (181, 0.42, 0.13), (198, 0.3, 0.1))):
+        a = math.radians(ang); d = Vector((math.cos(a), -0.25, math.sin(a))).normalized()
+        parts['shards'].append(shard('Shard%d' % i, d * 0.8 - N_CUT * GAP, d * (0.8 + L_) - N_CUT * GAP, w, crys))
+    # искры огня и ледяные блёстки
+    ember = mat_flat('Ember', (1, 0.4, 0.1), 0.5, srgb((1.0, 0.42, 0.08)), 7)
+    frost = mat_flat('Frost', (0.6, 0.9, 1), 0.5, srgb((0.45, 0.9, 1.0)), 6)
+    for i in range(16):
+        a = math.radians(random.uniform(-80, 10)); r = random.uniform(1.15, 1.65)
+        parts['embers'].append(dot('Ember%d' % i, (math.cos(a) * r, -random.uniform(0.2, 0.9), math.sin(a) * r), random.uniform(0.012, 0.03), ember))
+    for i in range(10):
+        a = math.radians(random.uniform(95, 215)); r = random.uniform(1.2, 1.6)
+        parts['frosts'].append(dot('Frost%d' % i, (math.cos(a) * r, -random.uniform(0.2, 0.9), math.sin(a) * r), random.uniform(0.01, 0.022), frost))
+
+    # светящийся разрез (как удар клинка) — перед мячом и за ним
+    bm_ = bpy.data.materials.new('Blade'); N, L, b = nodes(bm_)
+    tc = N.new('ShaderNodeTexCoord'); sep = N.new('ShaderNodeSeparateXYZ'); L.new(tc.outputs['Object'], sep.inputs[0])
+    ramp = N.new('ShaderNodeValToRGB'); L.new(sep.outputs['X'], ramp.inputs['Fac'])
+    mapr = N.new('ShaderNodeMapRange'); mapr.inputs['From Min'].default_value = -1.4; mapr.inputs['From Max'].default_value = 1.4
+    L.new(sep.outputs['X'], mapr.inputs['Value']); L.new(mapr.outputs['Result'], ramp.inputs['Fac'])
+    ramp.color_ramp.elements[0].color = (*srgb((0.55, 0.95, 1.0)), 1); ramp.color_ramp.elements[1].color = (*srgb((1.0, 0.7, 0.3)), 1)
+    mid = ramp.color_ramp.elements.new(0.5); mid.color = (1, 1, 1, 1)
+    L.new(ramp.outputs['Color'], b.inputs['Base Color']); L.new(ramp.outputs['Color'], b.inputs['Emission Color']); b.inputs['Emission Strength'].default_value = 22
+    bl = blade('Blade', 3.3, 0.07, bm_); bl.location = (0, -1.08, 0)
+    bl2 = blade('BladeBack', 2.3, 0.05, bm_); bl2.location = (0, 0.0, 0)
+    parts.update(ice=ice, fire=fire, blades=[bl, bl2], blade_mat=bm_)
+    return parts
+
+
 # ---------------------------------------------------------------- сцена
 def main():
     clean(); sc = bpy.context.scene
@@ -249,56 +308,7 @@ def main():
     sc.world = sc.world or bpy.data.worlds.new('W'); sc.world.use_nodes = True
     bg = next(n for n in sc.world.node_tree.nodes if n.type == 'BACKGROUND'); bg.inputs['Color'].default_value = (0.01, 0.012, 0.03, 1); bg.inputs['Strength'].default_value = 0.4
 
-    src = ball_mesh()
-    ice_m = [mat_ice_panel('IceHex', srgb((0.55, 0.86, 1.0)), srgb((0.3, 0.85, 1.0)), 3.5),
-             mat_flat('IcePent', srgb((0.02, 0.05, 0.16)), 0.15),
-             mat_flat('IceSeam', srgb((0.02, 0.05, 0.12)), 0.4),
-             mat_flat('IceCore', srgb((0.5, 0.95, 1.0)), 0.3, srgb((0.45, 0.95, 1.0)), 9.0)]
-    fire_m = [mat_fire_panel('FireHex', srgb((0.42, 0.13, 0.04)), 9.0),
-              mat_flat('FirePent', srgb((0.015, 0.008, 0.006)), 0.35),
-              mat_flat('FireSeam', srgb((0.02, 0.01, 0.01)), 0.6),
-              mat_flat('FireCore', srgb((1.0, 0.7, 0.25)), 0.3, srgb((1.0, 0.62, 0.18)), 16.0)]
-    ice = half(src, 'IceHalf', False); fire = half(src, 'FireHalf', True)
-    bpy.data.objects.remove(src, do_unlink=True)
-    for o, ms in ((ice, ice_m), (fire, fire_m)):
-        for i, m in enumerate(ms): o.data.materials[i] = m   # по местам: clear() сбросил бы номера панелей
-
-    # сияние и пламя — светящиеся объёмы вокруг своих половинок
-    # языки пламени и магическое сияние — светящиеся оболочки с рваным краем, видны по контуру своей половины
-    NOFX = os.environ.get('ARENA_NOFX') == '1'
-    for i, (r, k, th) in enumerate(((1.05, 1.0, 0.36), (1.14, 0.9, 0.4), (1.26, 0.75, 0.46), (1.4, 0.55, 0.52), (1.56, 0.4, 0.58))):
-        if NOFX: break
-        shell('Flame%d' % i, r, mat_flame('FlameM%d' % i, srgb((1.0, 0.72, 0.18)), srgb((0.95, 0.16, 0.01)), 1, 0.3, th, i * 7.3, 3.2 * k), N_CUT * GAP)
-    for i, (r, k, th) in enumerate(((1.05, 1.0, 0.42), (1.15, 0.8, 0.48), (1.28, 0.6, 0.55))):
-        if NOFX: break
-        shell('Magic%d' % i, r, mat_flame('MagicM%d' % i, srgb((0.35, 0.92, 1.0)), srgb((0.45, 0.25, 1.0)), -1, 0.55, th, 3.1 + i * 5.7, 2.6 * k), -N_CUT * GAP)
-
-    # ледяные кристаллы по краю ледяной половины (вверх-влево)
-    crys = mat_glass('Crystal', srgb((0.55, 0.92, 1.0)), 2.5)
-    for i, (ang, L_, w) in enumerate(((112, 0.38, 0.12), (130, 0.62, 0.17), (147, 0.48, 0.14), (163, 0.66, 0.18), (181, 0.42, 0.13), (198, 0.3, 0.1))):
-        a = math.radians(ang); d = Vector((math.cos(a), -0.25, math.sin(a))).normalized()
-        shard('Shard%d' % i, d * 0.8 - N_CUT * GAP, d * (0.8 + L_) - N_CUT * GAP, w, crys)
-    # искры огня и ледяные блёстки
-    ember = mat_flat('Ember', (1, 0.4, 0.1), 0.5, srgb((1.0, 0.42, 0.08)), 7)
-    frost = mat_flat('Frost', (0.6, 0.9, 1), 0.5, srgb((0.45, 0.9, 1.0)), 6)
-    for i in range(16):
-        a = math.radians(random.uniform(-80, 10)); r = random.uniform(1.15, 1.65)
-        dot('Ember%d' % i, (math.cos(a) * r, -random.uniform(0.2, 0.9), math.sin(a) * r), random.uniform(0.012, 0.03), ember)
-    for i in range(10):
-        a = math.radians(random.uniform(95, 215)); r = random.uniform(1.2, 1.6)
-        dot('Frost%d' % i, (math.cos(a) * r, -random.uniform(0.2, 0.9), math.sin(a) * r), random.uniform(0.01, 0.022), frost)
-
-    # светящийся разрез (как удар клинка) — перед мячом и за ним
-    bm_ = bpy.data.materials.new('Blade'); N, L, b = nodes(bm_)
-    tc = N.new('ShaderNodeTexCoord'); sep = N.new('ShaderNodeSeparateXYZ'); L.new(tc.outputs['Object'], sep.inputs[0])
-    ramp = N.new('ShaderNodeValToRGB'); L.new(sep.outputs['X'], ramp.inputs['Fac'])
-    mapr = N.new('ShaderNodeMapRange'); mapr.inputs['From Min'].default_value = -1.4; mapr.inputs['From Max'].default_value = 1.4
-    L.new(sep.outputs['X'], mapr.inputs['Value']); L.new(mapr.outputs['Result'], ramp.inputs['Fac'])
-    ramp.color_ramp.elements[0].color = (*srgb((0.55, 0.95, 1.0)), 1); ramp.color_ramp.elements[1].color = (*srgb((1.0, 0.7, 0.3)), 1)
-    mid = ramp.color_ramp.elements.new(0.5); mid.color = (1, 1, 1, 1)
-    L.new(ramp.outputs['Color'], b.inputs['Base Color']); L.new(ramp.outputs['Color'], b.inputs['Emission Color']); b.inputs['Emission Strength'].default_value = 22
-    bl = blade('Blade', 3.3, 0.07, bm_); bl.location = (0, -1.08, 0)
-    bl2 = blade('BladeBack', 2.3, 0.05, bm_); bl2.location = (0, 0.0, 0)
+    build()
 
     # свет: холодный сверху слева (магия), тёплый снизу справа (огонь), контровой сзади
     def area(name, loc, col, e, size):

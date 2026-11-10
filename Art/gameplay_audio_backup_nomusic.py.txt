@@ -1,0 +1,290 @@
+# Звук геймплейного трейлера SpellStrike (65 с): музыка, трибуны, удары, способности, голы.
+# Тайминги — gameplay_cues.py и кадры из постановки gameplay_trailer.py (если поменял постановку — поправь кадры здесь).
+# Запуск: python gameplay_audio.py  (нужны numpy и ffmpeg) → Builds/Trailer/gameplay_audio.wav
+# gameplay_trailer.py сам подкладывает этот файл в ролик, если он есть.
+# Музыка — «Upbeat Title Theme» (CC0) из меню игры. Трибуны: Gregor Quendel, «Free Crowd Cheering Sounds» (CC BY 4.0)
+# и Quistard, freesound.org/s/237684 (CC BY 3.0) — указать в описании видео.
+import os, sys, subprocess, zipfile, tempfile
+import numpy as np
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.environ.get('ARENA_ROOT') or os.path.dirname(os.path.dirname(HERE))
+sys.path.insert(0, HERE)
+import gameplay_cues as Q
+
+SR = 48000
+DUR = Q.F_END / Q.FPS
+N = int(SR * DUR)
+OUTDIR = os.path.join(ROOT, 'Builds', 'Trailer')
+ZIP = os.path.join(ROOT, 'sounds', 'Gregor Quendel - Free Crowd Cheering Sounds.zip')
+OOH = os.path.join(ROOT, 'sounds', '237684__quistard__football-crowd-near-miss-ooh-2-southampton-vs-hull-at-saint-marys-stadium.wav')
+MUSIC = os.path.join(ROOT, 'Assets', 'Arena', 'Resources', 'Audio', 'music_menu.ogg')
+rng = np.random.default_rng(11)
+
+def sec(frame): return frame / Q.FPS
+def at(t): return int(t * SR)
+def db(v): return 10 ** (v / 20)
+
+# ---------------------------------------------------------------- загрузка и фильтры (без scipy: через спектр)
+_tmp = tempfile.mkdtemp(prefix='gameplay_snd_')
+def gregor(num):
+    with zipfile.ZipFile(ZIP) as z:
+        name = next(n for n in z.namelist() if (' - %02d - ' % num) in n and not n.startswith('__MACOSX') and n.endswith('.wav'))
+        p = os.path.join(_tmp, '%02d.wav' % num)
+        if not os.path.exists(p):
+            with open(p, 'wb') as f: f.write(z.read(name))
+        return p
+
+def load(path, start=0.0, dur=None, norm=True):
+    cmd = ['ffmpeg', '-v', 'error', '-ss', str(start)] + (['-t', str(dur)] if dur else []) + ['-i', path, '-ac', '2', '-ar', str(SR), '-f', 'f32le', '-']
+    a = np.frombuffer(subprocess.run(cmd, capture_output=True, check=True).stdout, dtype=np.float32).reshape(-1, 2).astype(np.float64)
+    return a / max(1e-9, np.abs(a).max()) if norm else a
+
+def filt(x, kind, f, order=2):
+    """Фильтр Баттерворта по модулю (нулевая фаза): lowpass / highpass / bandpass [f1, f2]."""
+    X = np.fft.rfft(x, axis=0)
+    fr = np.fft.rfftfreq(len(x), 1 / SR) + 1e-6
+    if kind == 'lowpass':
+        H = 1 / np.sqrt(1 + (fr / f) ** (2 * order))
+    elif kind == 'highpass':
+        H = 1 / np.sqrt(1 + (f / fr) ** (2 * order))
+    else:
+        H = 1 / np.sqrt(1 + (fr / f[1]) ** (2 * order)) / np.sqrt(1 + (f[0] / fr) ** (2 * order))
+    return np.fft.irfft(X * H[:, None], n=len(x), axis=0)
+
+def env(points, n=N):
+    """Огибающая по точкам [(секунда, уровень)], линейно."""
+    ts, vs = zip(*sorted(points))
+    return np.interp(np.arange(n) / SR, ts, vs)[:, None]
+
+mix = np.zeros((N, 2))      # звуки игры и трибуны
+music = np.zeros((N, 2))    # музыка (отдельно — её приглушаем под замедление)
+def add(sig, t, gain=1.0, pan=0.0, buf=None):
+    """Положить звук с секунды t; pan от -1 (лево) до 1 (право)."""
+    buf = mix if buf is None else buf
+    i = at(t)
+    if i >= N or i < 0: return
+    s = sig if sig.ndim == 2 else np.stack([sig, sig], 1)
+    s = s[:N - i] * np.array([min(1, 1 - pan), min(1, 1 + pan)])
+    buf[i:i + len(s)] += s * gain
+
+def noise(dur, color='white'):
+    n = int(dur * SR); w = rng.standard_normal((n, 2))
+    if color == 'brown':
+        w = np.cumsum(w, axis=0); w = filt(w, 'highpass', 20); w /= np.abs(w).max()
+    return w
+
+def decay(dur, tau):
+    t = np.arange(int(dur * SR)) / SR
+    return np.exp(-t / tau)[:, None]
+
+def tone(freq0, freq1, dur, tau=None):
+    n = int(dur * SR)
+    f = np.linspace(freq0, freq1, n); ph = 2 * np.pi * np.cumsum(f) / SR
+    s = np.sin(ph)[:, None] * np.ones((1, 2))
+    return s * (decay(dur, tau) if tau else 1)
+
+# ---------------------------------------------------------------- звуки
+def thump(freq=55, dur=0.6, tau=0.16):
+    return tone(freq * 1.8, freq, dur, tau) + filt(noise(dur), 'lowpass', 180) * decay(dur, tau * 0.4) * 0.6
+
+def whoosh(dur=0.35, up=True):
+    n = noise(dur); t = np.linspace(0, 1, len(n))[:, None]
+    lo = filt(n, 'bandpass', [300, 1500]); hi = filt(n, 'bandpass', [1500, 6000])
+    k = t if up else 1 - t
+    e = np.sin(np.pi * np.linspace(0, 1, len(n))) ** 2
+    return (lo * (1 - k) + hi * k) * e[:, None]
+
+def kick(strong=1.0):                               # удар по мячу
+    d = 0.5
+    return thump(70, d, 0.07 + 0.03 * strong) * (0.8 + 0.4 * strong) + filt(noise(d), 'bandpass', [600, 2500]) * decay(d, 0.012) * 0.8
+
+def touch():                                         # приём мяча — глухой «тук»
+    d = 0.25
+    return thump(95, d, 0.04) * 0.7 + filt(noise(d), 'bandpass', [400, 1500]) * decay(d, 0.01) * 0.4
+
+def fire_roar(dur):
+    n = filt(noise(dur, 'brown'), 'lowpass', 900) * 1.6
+    crack = (rng.random((int(dur * SR), 1)) > 0.9993) * rng.standard_normal((int(dur * SR), 2))
+    crack = filt(crack, 'highpass', 2000) * 3
+    e = env([(0, 0), (0.05, 1), (dur * 0.7, 0.8), (dur, 0)], len(n))
+    return (n + crack) * e
+
+def ignite(dur):                                     # огонь разгорается на замахе
+    n = filt(noise(dur, 'brown'), 'lowpass', 1200) * 1.4
+    return n * env([(0, 0), (dur, 1)], len(n)) + tone(60, 120, dur) * env([(0, 0), (dur, 0.25)], int(dur * SR))
+
+def net_hit():
+    d = 0.9
+    return filt(noise(d), 'bandpass', [2000, 7000]) * decay(d, 0.12) * 0.5 + thump(60, d, 0.12) * 0.7
+
+def post_clang():                                    # мяч в штангу
+    d = 1.6
+    s = sum(tone(f, f * 0.995, d, tau) * a for f, tau, a in ((523, 0.5, 0.5), (1310, 0.3, 0.35), (2210, 0.18, 0.25), (3480, 0.1, 0.15)))
+    return s + thump(110, d, 0.05) * 0.6
+
+def spin_whistle(dur):
+    n = int(dur * SR); t = np.arange(n) / SR
+    f = 950 + 400 * t / dur; trem = 0.6 + 0.4 * np.sin(2 * np.pi * 14 * t)
+    s = np.sin(2 * np.pi * np.cumsum(f) / SR) * trem * np.sin(np.pi * t / dur)
+    return s[:, None] * np.ones((1, 2)) * 0.35 + filt(noise(dur), 'bandpass', [3000, 8000]) * 0.08
+
+def chain(dur, ticks=26):                            # верёвка/звенья крюка
+    s = np.zeros((int(dur * SR), 2))
+    for i in range(ticks):
+        p = int(i / ticks * len(s)); g = filt(noise(0.03), 'bandpass', [2500 + rng.random() * 2500, 9000]) * decay(0.03, 0.006)
+        s[p:p + len(g)] += g[:len(s) - p] * (0.5 + 0.5 * rng.random())
+    return s
+
+def zap():                                           # телепорт
+    return tone(2400, 180, 0.35, 0.12) * 0.6 + filt(noise(0.35), 'highpass', 3000) * decay(0.35, 0.05) * 0.4
+
+def ice():                                           # лёд вырастает
+    d = 1.2
+    crunch = filt(noise(d), 'bandpass', [1200, 6000]) * env([(0, 0), (0.02, 1), (0.25, 0.5), (0.5, 0)], int(d * SR))
+    chime = sum(tone(f, f, d, 0.35) * a for f, a in ((2093, 0.12), (2637, 0.08), (3136, 0.06)))
+    return crunch * 0.8 + chime + thump(50, d, 0.18) * 0.8
+
+def ice_hit():                                       # мяч бьётся о лёд
+    d = 0.6
+    return thump(85, d, 0.05) * 0.8 + filt(noise(d), 'bandpass', [2500, 8000]) * decay(d, 0.04) * 0.6 + tone(2794, 2794, d, 0.15) * 0.1
+
+def poof(rev=False):                                 # Тень растворяется (rev — появляется)
+    d = 0.7
+    n = filt(noise(d), 'bandpass', [400, 3000]); e = env([(0, 0), (0.45, 1), (0.5, 0.3), (0.7, 0)], len(n))
+    s = n * e * 0.6
+    return s[::-1].copy() if rev else s
+
+def dash_hit():                                      # сбивание рывком
+    d = 0.7
+    return thump(65, d, 0.09) * 1.1 + filt(noise(d), 'bandpass', [300, 1800]) * decay(d, 0.05) * 0.7
+
+def heartbeat():
+    return thump(45, 0.5, 0.08) + np.pad(thump(42, 0.4, 0.07) * 0.7, ((int(0.18 * SR), 0), (0, 0)))[:int(0.5 * SR)]
+
+def boom(dur=4.0):
+    return tone(70, 32, dur, 0.9) * 1.1 + filt(noise(dur, 'brown'), 'lowpass', 300) * decay(dur, 0.6) * 0.8
+
+def sparkle(dur=0.8):                                # блёстки на надписи
+    s = np.zeros((int(dur * SR), 2))
+    for i in range(14):
+        p = int(rng.random() * 0.6 * len(s)); f = 2500 + rng.random() * 3500
+        g = tone(f, f, 0.12, 0.04) * 0.25
+        s[p:p + len(g)] += g[:len(s) - p]
+    return s
+
+def tick():                                          # подпись способности
+    return filt(noise(0.12), 'bandpass', [1500, 6000]) * decay(0.12, 0.02) * 0.5 + tone(1800, 1200, 0.12, 0.03) * 0.15
+
+# ---------------------------------------------------------------- сборка
+def build():
+    G = Q
+    # --- трибуны: ровный гул весь ролик, оживают к голам
+    amb = load(gregor(10), 2.0, DUR)
+    add(amb * env([(0, 0), (0.4, 0.55), (sec(G.MVP), 0.55), (sec(G.BLACK), 0.4), (sec(G.BLACK) + 0.05, 0), (DUR, 0)], len(amb)), 0)
+    chant = load(gregor(8), 0.0, sec(G.BLACK) - sec(G.PLAY3))           # к финалу скандируют
+    add(chant * env([(0, 0), (1.0, 0.35), (sec(G.GOLDEN_KICK) - sec(G.PLAY3), 0.5), (sec(G.MVP) - sec(G.PLAY3), 0.35),
+                     (sec(G.BLACK) - sec(G.PLAY3) - 0.05, 0.25), (sec(G.BLACK) - sec(G.PLAY3), 0)], len(chant)), sec(G.PLAY3))
+    cheer_src = load(gregor(4), 0.3, 6.0)
+    roar_src = load(gregor(1), 4.0, 9.0)
+    for g in G.GOALS:
+        big = g in G.BIG_GOALS
+        src = roar_src if g == G.GOAL_GOLDEN else cheer_src
+        L = (7.5 if g == G.GOAL_GOLDEN else 4.0 if big else 2.6)
+        c = src[:at(L)]
+        add(c * env([(0, 0), (0.12, 1), (L * 0.6, 0.6), (L, 0)], len(c)), sec(g), 0.8 if big else 0.5)
+        add(net_hit(), sec(g), 1.1 if big else 0.8)
+        if big:
+            add(boom(1.4), sec(g), 0.45)
+    if os.path.exists(OOH):                                             # удар в штангу
+        ooh = load(OOH, 0.2, 2.6)
+        add(ooh * env([(0, 0), (0.2, 1), (2.0, 0.6), (2.6, 0)], len(ooh)), sec(G.PLAY1_POST) + 0.25, 0.6)
+
+    # --- 1. открытие: огненный суперудар
+    add(fire_roar(1.5) * 0.4, 0.0)
+    add(ignite(sec(G.OPEN_KICK) - 0.8), 0.8, 0.6)
+    add(kick(1.4), sec(G.OPEN_KICK), 1.2); add(thump(38, 1.0, 0.3), sec(G.OPEN_KICK), 0.9)
+    add(fire_roar(sec(G.GOAL_OPEN) - sec(G.OPEN_KICK) + 0.4), sec(G.OPEN_KICK), 0.9)
+    # --- 2. розыгрыши
+    for f, s_ in ((172, 0.5), (244, 0.5), (290, 0.5), (408, 0.7), (458, 1.0)):   # пасы, навес, удар
+        add(kick(s_), sec(f), 0.8)
+    for f in (189, 263, 306, 453):                                     # приёмы
+        add(touch(), sec(f), 0.6)
+    add(kick(1.0), sec(320), 0.9); add(post_clang(), sec(G.PLAY1_POST), 0.7)
+    add(whoosh(0.3), sec(203), 0.5); add(dash_hit(), sec(212), 0.9)      # рывок Вихря сбивает Мига
+    add(touch() * 0.8, sec(446), 0.7)                                  # приём грудью
+    add(whoosh(0.5, up=False), sec(410), 0.25)                         # навес летит
+    # --- 3. герои
+    add(whoosh(0.3), sec(624), 0.6); add(chain(sec(632) - sec(624)), sec(624), 0.8)          # крюк
+    add(thump(90, 0.3, 0.05), sec(632), 0.9); add(chain(sec(648) - sec(632), 18), sec(632), 0.6); add(touch(), sec(649), 0.6)
+    add(kick(0.8), sec(748), 0.9); add(spin_whistle(sec(G.GOAL_CURVE) - sec(748)), sec(748), 0.8)   # кручёный
+    add(zap(), sec(868) - 0.05, 0.9); add(kick(0.5), sec(879), 0.5); add(touch(), sec(895), 0.6); add(kick(1.0), sec(918), 0.9)  # телепорт
+    add(thump(50, 0.6, 0.15), sec(978), 0.9); add(ice(), sec(980), 0.9)                       # разлом
+    add(kick(1.0), sec(992), 0.9); add(ice_hit(), sec(999), 1.0)
+    if os.path.exists(OOH):
+        ooh = load(OOH, 0.3, 2.0); add(ooh * env([(0, 0), (0.2, 1), (2.0, 0)], len(ooh)), sec(1000), 0.4)
+    add(poof(), sec(1106) - 0.45, 1.0); add(poof(rev=True), sec(1159) - 0.25, 0.8); add(kick(1.0), sec(1164), 0.9)   # невидимость
+    add(ignite(sec(1236) - sec(1220)), sec(1220), 0.7); add(kick(1.4), sec(1236), 1.2); add(thump(38, 1.0, 0.3), sec(1236), 0.9)  # огонь издалека
+    add(fire_roar(sec(G.GOAL_FIRE) - sec(1236) + 0.4), sec(1236), 0.9)
+    for f in (G.V_HOOK, G.V_CURVE, G.V_BLINK, G.V_ICE, G.V_SHADOW, G.V_FIRE):
+        add(tick(), sec(f + 4), 0.6)
+    # --- 4. нарастание и золотой гол
+    add(whoosh(0.3), sec(1335), 0.5); add(dash_hit(), sec(1344), 0.9)
+    add(touch(), sec(1359), 0.6); add(kick(0.7), sec(1370), 0.8); add(touch(), sec(1401), 0.6)
+    add(whoosh(0.3), sec(1411), 0.5); add(kick(0.8), sec(1416), 0.9); add(spin_whistle(sec(1446) - sec(1416)), sec(1416), 0.6)
+    add(touch(), sec(1447), 0.7)
+    for t in np.arange(sec(1447), sec(G.GOLDEN_KICK), 0.36):            # замедление: сердце
+        add(heartbeat(), t, 0.7)
+    add(ignite(sec(G.GOLDEN_KICK) - sec(1450)), sec(1450), 0.8)
+    add(whoosh(0.3), sec(1464), 0.4)
+    add(kick(1.6), sec(G.GOLDEN_KICK), 1.3); add(boom(2.0), sec(G.GOLDEN_KICK), 0.8)
+    add(fire_roar(sec(G.GOAL_GOLDEN) - sec(G.GOLDEN_KICK) + 0.5), sec(G.GOLDEN_KICK), 1.0)
+    add(sparkle(), sec(G.GOAL_GOLDEN + 2), 0.8); add(sparkle(), sec(G.MVP + 12), 0.8)
+    # склейки — «вжух»
+    for f in (G.PLAY1, G.PLAY2, G.V_HOOK, G.V_CURVE, G.V_BLINK, G.V_ICE, G.V_SHADOW, G.V_FIRE, G.PLAY3, 1344, 1370, 1401, 1446, 1474, 1520, G.MVP):
+        add(whoosh(0.28), sec(f) - 0.2, 0.35)
+    # замедление золотого гола: всё глухо, потом взрыв
+    a, b = at(sec(1446)), at(sec(G.GOLDEN_KICK))
+    seg = mix[a:b].copy(); mix[a:b] = filt(seg, 'lowpass', 700) * 0.8
+
+    # --- музыка: вступает на первой игровой камере, стихает к замедлению, взрывается на золотом голе
+    m = load(MUSIC, norm=True)
+    L = len(m); xf = at(0.6); start = at(sec(G.PLAY1)); end = at(sec(G.BLACK) + 0.4)
+    track = np.zeros((N, 2)); pos = start; first = True
+    while pos < end:
+        piece = m.copy()
+        if not first:
+            piece[:xf] *= np.linspace(0, 1, xf)[:, None]
+        piece[-xf:] *= np.linspace(1, 0, xf)[:, None]
+        n = min(len(piece), N - pos)
+        track[pos:pos + n] += piece[:n]
+        pos += L - xf; first = False
+    lvl = env([(0, 0), (sec(G.PLAY1) - 0.05, 0), (sec(G.PLAY1), 0.62), (sec(1440), 0.62), (sec(1450), 0.18), (sec(G.GOLDEN_KICK), 0.15),
+               (sec(G.GOAL_GOLDEN), 0.7), (sec(G.MVP), 0.7), (sec(G.BLACK), 0.5), (sec(G.BLACK) + 0.4, 0), (DUR, 0)])
+    track *= lvl
+    a2, b2 = at(sec(1446)), at(sec(G.GOAL_GOLDEN))
+    track[a2:b2] = filt(track[a2:b2].copy(), 'lowpass', 500)
+    add(track, 0, 1.0, buf=music)
+
+    out = mix * 0.85 + music
+    # чёрный экран — резкий обрыв и тишина; титр — низкий удар и далёкие трибуны
+    t_black, t_title = sec(G.BLACK) + 0.45, sec(G.TITLE)
+    out[at(t_black):at(t_title)] = 0
+    out[at(t_black) - at(0.05):at(t_black)] *= np.linspace(1, 0, at(0.05))[:, None]
+    tail = load(gregor(10), 20.0, DUR - t_title)
+    tail = filt(tail, 'lowpass', 900) * env([(0, 0), (1.0, 0.25), (DUR - t_title - 0.6, 0.25), (DUR - t_title, 0)], len(tail))
+    title = np.zeros((N, 2))
+    add(boom(DUR - sec(G.TITLE_POP)), sec(G.TITLE_POP) - 0.05, 0.9, buf=title); add(tail, t_title, 1.0, buf=title)
+    add(sparkle(1.2), sec(G.TITLE_POP + 10), 0.6, buf=title)
+    out += title
+    # мастер: мягкое ограничение, нормировка до -1 дБ
+    out = np.tanh(out * 0.9) / np.tanh(0.9)
+    out *= db(-1) / max(1e-9, np.abs(out).max())
+    os.makedirs(OUTDIR, exist_ok=True)
+    pcm = (out * 32767).astype(np.int16)
+    path = os.path.join(OUTDIR, 'gameplay_audio.wav')
+    subprocess.run(['ffmpeg', '-v', 'error', '-y', '-f', 's16le', '-ar', str(SR), '-ac', '2', '-i', '-', path], input=pcm.tobytes(), check=True)
+    print('звук:', path)
+
+if __name__ == '__main__':
+    build()

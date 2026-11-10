@@ -47,7 +47,12 @@ namespace Arena.Game
             sun.shadows = LightShadows.Soft; sun.shadowStrength = 0.75f;
             sun.transform.rotation = Quaternion.Euler(58, -30, 0);
             RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Trilight;
-            RenderSettings.ambientSkyColor = Mat.Hex("#34446e"); RenderSettings.ambientEquatorColor = Mat.Hex("#1a2340"); RenderSettings.ambientGroundColor = Mat.Hex("#0a0e1c"); // ночная синева
+            RenderSettings.ambientSkyColor = Mat.Hex("#34446e"); RenderSettings.ambientEquatorColor = Mat.Hex("#1a2340"); RenderSettings.ambientGroundColor = Mat.Hex("#0a0e1c"); // ночная синева (бок и низ потом задаёт SetHeroLight)
+            // заполняющий свет без теней — с противоположной прожектору стороны и низко: подсвечивает теневые стороны героев, газон почти не трогает
+            fill = new GameObject("HeroFill").AddComponent<Light>();
+            fill.transform.SetParent(root, false);
+            fill.type = LightType.Directional; fill.color = Mat.Hex("#c9d6ff"); fill.intensity = 0.35f; fill.shadows = LightShadows.None;
+            fill.transform.rotation = Quaternion.Euler(18, 150, 0);
             RenderSettings.fog = true; RenderSettings.fogMode = FogMode.Linear; RenderSettings.fogColor = Mat.Hex("#0a1026");
             RenderSettings.fogStartDistance = 22; RenderSettings.fogEndDistance = 50;
 
@@ -129,6 +134,15 @@ namespace Arena.Game
 
         UnityEngine.Rendering.Universal.Bloom bloom;
         public void SetBloom(float intensity) { if (bloom != null) bloom.intensity.value = intensity; }
+
+        Light fill;
+        /// <summary>Подсветка теневых сторон героев (вместо toon): фоновый свет сбоку и снизу + заполняющий свет. Небо (газон) не меняется.</summary>
+        public void SetHeroLight(Color side, Color ground, float fillIntensity)
+        {
+            if (RenderSettings.ambientEquatorColor != side) RenderSettings.ambientEquatorColor = side;
+            if (RenderSettings.ambientGroundColor != ground) RenderSettings.ambientGroundColor = ground;
+            if (fill != null) { fill.intensity = fillIntensity; fill.enabled = fillIntensity > 0.001f; }
+        }
 
         void BuildPitch()
         {
@@ -285,17 +299,67 @@ namespace Arena.Game
         void BuildStands() => stadium = new StadiumView(root);
 
         // ---------- ball and effects ----------
+        /// <summary>Классический футбольный мяч (усечённый икосаэдр): 12 тёмных пятиугольников, 20 белых шестиугольников,
+        /// утопленные швы (карта нормалей). Текстура в развёртке сферы Unity, считается один раз при запуске.</summary>
+        static Material BallMaterial()
+        {
+            const int W = 1024, H = 512;
+            float t = (1 + Mathf.Sqrt(5)) / 2;
+            var penta = new System.Collections.Generic.List<Vector3>();
+            foreach (var v in new[] { new Vector3(-1, t, 0), new Vector3(1, t, 0), new Vector3(-1, -t, 0), new Vector3(1, -t, 0),
+                                      new Vector3(0, -1, t), new Vector3(0, 1, t), new Vector3(0, -1, -t), new Vector3(0, 1, -t),
+                                      new Vector3(t, 0, -1), new Vector3(t, 0, 1), new Vector3(-t, 0, -1), new Vector3(-t, 0, 1) }) penta.Add(v.normalized);
+            var centers = new System.Collections.Generic.List<Vector3>(penta);
+            // центры шестиугольников — центры граней икосаэдра (тройки соседних вершин)
+            float edge = Vector3.Distance(penta[0], penta[1]) * 1.01f;
+            for (int i = 0; i < 12; i++) for (int j = i + 1; j < 12; j++) for (int k = j + 1; k < 12; k++)
+                if (Vector3.Distance(penta[i], penta[j]) < edge && Vector3.Distance(penta[j], penta[k]) < edge && Vector3.Distance(penta[i], penta[k]) < edge)
+                    centers.Add((penta[i] + penta[j] + penta[k]).normalized);
+            var col = new Color32[W * H]; var nrm = new Color32[W * H]; var seam = new float[W * H];
+            Color32 dark = new Color32(20, 38, 64, 255), white = new Color32(240, 242, 246, 255), line = new Color32(150, 156, 168, 255);
+            for (int y = 0; y < H; y++)
+            {
+                float th = (y + 0.5f) / H * Mathf.PI; // от южного полюса к северному
+                float sy = -Mathf.Cos(th), r = Mathf.Sin(th);
+                for (int x = 0; x < W; x++)
+                {
+                    float ph = (x + 0.5f) / W * Mathf.PI * 2;
+                    var d = new Vector3(-Mathf.Cos(ph) * r, sy, -Mathf.Sin(ph) * r);
+                    float b1 = -2, b2 = -2; int bi = 0;
+                    for (int c = 0; c < centers.Count; c++)
+                    {
+                        float dt = Vector3.Dot(d, centers[c]);
+                        if (dt > b1) { b2 = b1; b1 = dt; bi = c; } else if (dt > b2) b2 = dt;
+                    }
+                    float g = b1 - b2; // у шва две грани почти равны
+                    float sm = Mathf.Clamp01(1 - g / 0.018f);
+                    seam[y * W + x] = sm;
+                    Color32 basec = bi < 12 ? dark : white;
+                    col[y * W + x] = Color32.Lerp(basec, line, sm * 0.85f);
+                }
+            }
+            for (int y = 0; y < H; y++)
+                for (int x = 0; x < W; x++)
+                {   // нормали из «высоты» швов (шов утоплен)
+                    float hl = seam[y * W + (x + W - 1) % W], hr = seam[y * W + (x + 1) % W];
+                    float hd = seam[Mathf.Max(0, y - 1) * W + x], hu = seam[Mathf.Min(H - 1, y + 1) * W + x];
+                    var n = new Vector3((hl - hr) * 1.2f, (hd - hu) * 1.2f, 1).normalized;
+                    nrm[y * W + x] = new Color32((byte)(n.x * 127 + 128), (byte)(n.y * 127 + 128), (byte)(n.z * 127 + 128), 255);
+                }
+            var tex = new Texture2D(W, H, TextureFormat.RGBA32, true) { anisoLevel = 4, filterMode = FilterMode.Trilinear, wrapModeU = TextureWrapMode.Repeat, wrapModeV = TextureWrapMode.Clamp };
+            tex.SetPixels32(col); tex.Apply(true, true);
+            var nt = new Texture2D(W, H, TextureFormat.RGBA32, true, true) { anisoLevel = 4, filterMode = FilterMode.Trilinear, wrapModeU = TextureWrapMode.Repeat, wrapModeV = TextureWrapMode.Clamp };
+            nt.SetPixels32(nrm); nt.Apply(true, true);
+            var mat = new Material(Mat.Solid(Color.white, 0.62f));
+            mat.SetTexture("_BaseMap", tex);
+            mat.SetTexture("_BumpMap", nt); mat.SetFloat("_BumpScale", 1f); mat.EnableKeyword("_NORMALMAP");
+            return mat;
+        }
+
+        // ---------- ball and effects (сцена) ----------
         void BuildBall()
         {
-            var tex = new Texture2D(128, 64);
-            var px = new Color32[128 * 64];
-            for (int i = 0; i < px.Length; i++) px[i] = new Color32(255, 255, 255, 255);
-            int[,] patches = { { 16, 32, 8 }, { 48, 15, 7 }, { 48, 49, 7 }, { 80, 32, 8 }, { 112, 15, 7 }, { 112, 49, 7 }, { 64, 2, 7 }, { 64, 62, 7 } };
-            for (int p = 0; p < patches.GetLength(0); p++)
-                for (int i = 0; i < 128; i++) for (int j = 0; j < 64; j++)
-                        if ((i - patches[p, 0]) * (i - patches[p, 0]) + (j - patches[p, 1]) * (j - patches[p, 1]) <= patches[p, 2] * patches[p, 2]) px[j * 128 + i] = new Color32(22, 48, 58, 255);
-            tex.SetPixels32(px); tex.Apply();
-            var mat = new Material(Mat.Solid(Color.white, 0.4f)); mat.SetTexture("_BaseMap", tex);
+            var mat = BallMaterial();
             ball = Shapes.Prim(PrimitiveType.Sphere, root, Vector3.zero, Vector3.one * BR * 2 * S, mat, "Ball").transform;
             trail = ball.gameObject.AddComponent<TrailRenderer>();
             trail.time = 0.12f; trail.startWidth = BR * 1.6f * S; trail.endWidth = 0; trail.minVertexDistance = 0.02f;
@@ -505,12 +569,26 @@ namespace Arena.Game
                 var p = m.Players[heroes.Count];
                 heroes.Add(new HeroView(root, p.Team, "Hero" + heroes.Count));
             }
-            for (int i = 0; i < heroes.Count; i++) heroes[i].SetVisible(i < m.Players.Count);
+            for (int i = 0; i < heroes.Count; i++) heroes[i].SetVisible(i < m.Players.Count && !HideHeroes && !HiddenForMvp(m.Players[i]));
+        }
+
+        /// <summary>Экран MVP: лучший игрок (задаёт ArenaGame каждый кадр, иначе null). Остальные рядом с ним прячутся, чтобы не загораживали.</summary>
+        public static SimPlayer MvpSolo;
+        /// <summary>Главное меню: ночной стадион без героев (MenuStage).</summary>
+        public static bool HideHeroes;
+        /// <summary>Радиус вокруг MVP, в котором другие герои прячутся на экране MVP (единицы поля, 100 = 1 м).</summary>
+        public static float MvpSoloRadius = 520;
+        static bool HiddenForMvp(SimPlayer p)
+        {
+            var mvp = MvpSolo;
+            if (mvp == null || p == mvp) return false;
+            float dx = p.X - mvp.X, dy = p.Y - mvp.Y;
+            return dx * dx + dy * dy < MvpSoloRadius * MvpSoloRadius;
         }
 
         public void Rebuild(Match m)
         { // team colours are baked into a hero view, so rebuild when the line-up changes
-            foreach (var h in heroes) Object.Destroy(h.Root);
+            foreach (var h in heroes) h.Destroy(); // вместе с крюком и верёвкой — иначе брошенный крюк оставался лежать на поле
             heroes.Clear();
             EnsureHeroes(m);
         }

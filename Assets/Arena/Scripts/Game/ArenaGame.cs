@@ -21,7 +21,7 @@ namespace Arena.Game
         [Tooltip("Тряска камеры, множитель")] [Range(0, 3)] public float shakeScale = 1;
         [Tooltip("Рывок камеры (приближение) при ударе, градусы")] [Range(0, 8)] public float fovKick = 3;
 
-        [Header("Съёмка клипов (H — скрыть интерфейс; C или правый стик — камеры по кругу, Shift+C — назад; V — кинокамера вкл/выкл)")]
+        [Header("Съёмка клипов (H — скрыть интерфейс; C или правый стик — камеры по кругу, Shift+C — назад; V — кинокамера вкл/выкл; T — трек мяча для вертикальной обрезки)")]
         [Tooltip("Камера «для съёмки»: расстояние до поля")] [Range(5, 20)] public float clipDistance = 10;
         [Tooltip("Камера «для съёмки»: наклон")] [Range(30, 80)] public float clipTilt = 48;
         [Tooltip("Повтор гола замедленно (в тренировке нет)")] public bool replay = true;
@@ -108,6 +108,7 @@ namespace Arena.Game
         // uiTime — часы интерфейса (при записи Unity Recorder идут по кадрам записи)
         // хайлайты ботов (Game/Highlights.cs)
         System.Text.StringBuilder track; int trackFrame; // где мяч на экране в каждом кадре хайлайтов — для вертикальной обрезки при монтаже
+        bool trackLive; int liveTake; float liveMark;      // T в матче: тот же трек для своей игры (чёрный кадр в начале дубля — метка для монтажа)
         HighlightScan scan; Match baseMatch; int reelIdx = -1, reelAngle; float reelSpeed = 1, reelGap; bool reelReady; CineCam.Shot reelShot;
         bool ReelPlaying => state == State.Reel && scan != null && scan.Finished && !reelReady && reelIdx >= 0 && reelIdx < scan.Best.Count;
         bool CineOn => camMode >= 2 && (state == State.Playing || state == State.Replay || state == State.Paused || state == State.Ended);
@@ -184,6 +185,7 @@ namespace Arena.Game
         /// <summary>В меню: на фоне играют боты (без людей), экран меню — указанный.</summary>
         void GoToMenu(MenuUI.Screen screen)
         {
+            if (trackLive) SaveTrack();
             Time.timeScale = 1; input.StopRumble(); netMenu = false;
             match.T = tuning; match.LocalSlot = 0; match.PlayIntro = false; // фоновый матч в меню — без выхода команд
             match.Duration = Field.MATCH_TIME; match.WinGoals = (int)Field.WIN_GOALS;
@@ -339,8 +341,9 @@ namespace Arena.Game
             HeroModel.FrameDt = state == State.Paused || hitstop > 0 ? 0 : vdt;
             view.Sync(match, Time.time, vdt, state == State.Playing ? lastCmd : default);
             toastT = Mathf.Max(0, toastT - dt);
+            liveMark = Mathf.Max(0, liveMark - dt);
             UpdateCamera(dt);
-            if (state == State.Reel) TrackFrame();
+            if (state == State.Reel || trackLive) TrackFrame();
             bool cineFx = cine.postFx && (CineOn || ReelPlaying || showFx || MenuCineOn);
             cineFxW = Mathf.MoveTowards(cineFxW, cineFx ? 1 : 0, dt * 3);
             view.SetCineFx(cineFxW, showFx ? showFocus : MenuCineOn ? menuStage.FocusDistance(cam.transform.position) : Vector3.Distance(cam.transform.position, cineCam.Focus), cine);
@@ -425,7 +428,7 @@ namespace Arena.Game
                 scan.Work(25); // ~25 мс за кадр — игра не зависает, пока ищем моменты
                 if (scan.Finished)
                 {
-                    if (scan.Best.Count == 0) { ExitReel(); Toast("Голов не нашлось — попробуй ещё раз"); return; }
+                    if (scan.Best.Count == 0) { ExitReel(); Toast("Моментов не нашлось — попробуй ещё раз"); return; }
                     reelReady = true; WriteReelLog();
                 }
                 return;
@@ -442,6 +445,14 @@ namespace Arena.Game
         {
             var hl = scan.Best[reelIdx]; var h = highlights; float g = hl.GoalT;
             reelAngle++;
+            if (hl.Ability)
+            {   // момент способности: трансляция (держит в кадре и героя) → замедленный облёт героя в ключевое мгновение
+                cineCam.Follow = reelAngle == 0 ? hl.Subject : null; cineCam.FollowMix = hl.Follow;
+                if (reelAngle == 0) { ReelShot(hl, CineCam.Shot.Broadcast, hl.T0, hl.T1, 1, 0.1f); return; }
+                if (reelAngle == 1 && h.abilityOrbit) { ReelShot(hl, CineCam.Shot.Orbit, hl.KeyT - 0.5f, hl.KeyT + 1.2f, h.abilitySlow, 0.1f); return; }
+                NextHighlight(); return;
+            }
+            cineCam.Follow = null;
             if (reelAngle == 0) { ReelShot(hl, CineCam.Shot.Broadcast, g - h.leadSeconds, g + 0.9f, 1, 0.1f); return; }
             if (reelAngle == 1) { ReelShot(hl, CineCam.Shot.Chase, g - h.slowSeconds, g + 0.6f, h.slowSpeed, 0.15f); return; }
             if (reelAngle == 2 && h.orbit && hl.Scorer != null) { ReelShot(hl, CineCam.Shot.Orbit, g + 0.5f, g + 0.5f + h.orbitSeconds, 1, 0); return; } // облёт — когда мяч уже в сетке
@@ -453,7 +464,7 @@ namespace Arena.Game
             reelShot = shot; reelSpeed = speed;
             cineCam.Cut(); view.ClearTrails();
             if (!hl.Rec.BeginRange(match, from, to, hold)) { NextAngle(); return; }
-            if (shot == CineCam.Shot.Orbit)
+            if (shot == CineCam.Shot.Orbit && !hl.Ability)
             {   // плашка гола поверх облёта: счёт уже с этим голом
                 goalT0 = uiTime; goalTeam = match.BannerTeam; goalScoreH = match.ScoreHome; goalScoreA = match.ScoreAway;
                 goalScorer = hl.Scorer != null ? match.Players.IndexOf(hl.Scorer) : -1;
@@ -466,13 +477,15 @@ namespace Arena.Game
             if (reelIdx >= scan.Best.Count) { ExitReel(); Toast("Хайлайты закончились — останови запись"); return; }
             match = scan.Best[reelIdx].M;
             match.Phase = MatchPhase.Playing; match.LocalSlot = 0;
+            match.LocalOverride = scan.Best[reelIdx].Ability ? scan.Best[reelIdx].Subject : null; // команда героя — «своя»: Тень видна полупрозрачной
             view.Rebuild(match); view.ShowYouMark = false;
             if (reelIdx > 0 && highlights.gap > 0) reelGap = highlights.gap; else NextAngle();
         }
 
         void ExitReel()
         {
-            if (scan != null && reelIdx >= 0 && reelIdx < scan.Best.Count) scan.Best[reelIdx].Rec.End(match);
+            if (scan != null && reelIdx >= 0 && reelIdx < scan.Best.Count) { scan.Best[reelIdx].Rec.End(match); match.LocalOverride = null; }
+            cineCam.Follow = null;
             SaveTrack();
             if (baseMatch != null) match = baseMatch;
             scan = null; baseMatch = null; reelIdx = -1; reelGap = 0; reelSpeed = 1;
@@ -482,10 +495,12 @@ namespace Arena.Game
         /// <summary>Записать положение мяча на экране в этом кадре (вызывается после камеры).</summary>
         void TrackFrame()
         {
-            if (track == null || !ReelPlaying) return;
+            if (track == null || (!trackLive && !ReelPlaying)) return;
             var b = match.Ball;
             Vector3 vp = cam.WorldToViewportPoint(W.Pos(b.X, b.Y, b.Z));
-            track.Append(trackFrame++).Append(';').Append(reelIdx + 1).Append(';').Append(reelAngle).Append(';').Append(reelGap > 0 ? 1 : 0).Append(';')
+            int take = trackLive ? liveTake : reelIdx + 1, angle = trackLive ? 9 : reelAngle;
+            bool gap = trackLive ? liveMark > 0 : reelGap > 0;
+            track.Append(trackFrame++).Append(';').Append(take).Append(';').Append(angle).Append(';').Append(gap ? 1 : 0).Append(';')
                  .Append(vp.x.ToString("0.0000", System.Globalization.CultureInfo.InvariantCulture)).Append(';')
                  .Append(vp.y.ToString("0.0000", System.Globalization.CultureInfo.InvariantCulture)).Append('\n');
         }
@@ -497,10 +512,10 @@ namespace Arena.Game
             {
                 string dir = System.IO.Path.Combine(Application.dataPath, "..", "Recordings");
                 System.IO.Directory.CreateDirectory(dir);
-                System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "track_" + System.DateTime.Now.ToString("yyyyMMdd_HHmm") + ".csv"), track.ToString());
+                System.IO.File.WriteAllText(System.IO.Path.Combine(dir, (trackLive ? "live_" : "track_") + System.DateTime.Now.ToString("yyyyMMdd_HHmm") + ".csv"), track.ToString());
             }
             catch (System.Exception ex) { Debug.LogWarning("[Arena] track: " + ex.Message); }
-            track = null;
+            track = null; trackLive = false;
         }
 
         /// <summary>Список моментов в Recordings/highlights.txt — по нему Claude монтирует запись.</summary>
@@ -513,9 +528,10 @@ namespace Arena.Game
                 var sb = new System.Text.StringBuilder();
                 sb.AppendLine("Хайлайты ботов " + System.DateTime.Now.ToString("yyyy-MM-dd HH:mm") + ": матчей " + scan.Total + ", голов " + scan.Goals
                               + "; планы: трансляция " + highlights.leadSeconds + " с, за мячом x" + highlights.slowSpeed + ", облёт " + (highlights.orbit ? highlights.orbitSeconds + " с" : "нет")
-                              + "; между моментами чёрный кадр " + highlights.gap + " с");
+                              + "; между моментами чёрный кадр " + highlights.gap + " с"
+                              + (highlights.abilities ? "; моменты способностей: по " + highlights.perHero + " на героя (найдено " + scan.Moments + "), план 1 — трансляция от " + highlights.abilityLead + " с до способности, план 2 — облёт x" + highlights.abilitySlow : ""));
                 for (int i = 0; i < scan.Best.Count; i++)
-                    sb.AppendLine((i + 1) + ". " + scan.Best[i].Desc + "  (баллы " + scan.Best[i].Score.ToString("0.0") + ", матч " + scan.Best[i].MatchNo + ")");
+                    sb.AppendLine((i + 1) + ". " + (scan.Best[i].Ability ? "[способность] " : "[гол] ") + scan.Best[i].Desc + "  (баллы " + scan.Best[i].Score.ToString("0.0") + ", матч " + scan.Best[i].MatchNo + ")");
                 System.IO.File.AppendAllText(System.IO.Path.Combine(dir, "highlights.txt"), sb.ToString() + "\n");
             }
             catch (System.Exception ex) { Debug.LogWarning("[Arena] highlights.txt: " + ex.Message); }
@@ -524,7 +540,7 @@ namespace Arena.Game
         void ReelGui(float w, float h)
         {
             if (scan == null) return;
-            if (!scan.Finished) { Panel(w, h, "Ищу лучшие моменты…", "Матч " + Mathf.Min(scan.Done + 1, scan.Total) + " из " + scan.Total + ", голов: " + scan.Goals + "     B / Esc — отмена"); return; }
+            if (!scan.Finished) { Panel(w, h, "Ищу лучшие моменты…", "Матч " + Mathf.Min(scan.Done + 1, scan.Total) + " из " + scan.Total + ", голов: " + scan.Goals + (highlights.abilities ? ", способностей: " + scan.Moments : "") + "     B / Esc — отмена"); return; }
             if (reelReady) { Panel(w, h, "Найдено моментов: " + scan.Best.Count, "Включи запись (Recorder → START RECORDING) и нажми A / Enter     B / Esc — выйти"); return; }
             if (reelAngle == 2 && reelGap <= 0 && highlights.banner) GoalBanner(w, h);
             if (reelGap > 0) { GUI.color = Color.black; GUI.DrawTexture(new Rect(0, 0, w, h), Texture2D.whiteTexture); GUI.color = Color.white; }
@@ -534,6 +550,11 @@ namespace Arena.Game
         {
             var kb = Keyboard.current; var gp = Gamepad.current;
             if (kb != null && kb.hKey.wasPressedThisFrame) { hudHidden = !hudHidden; Toast(hudHidden ? "Интерфейс скрыт (H — вернуть)" : "Интерфейс показан"); }
+            if (kb != null && kb.tKey.wasPressedThisFrame && state == State.Playing)
+            {   // трек мяча для вертикальной обрезки: дубль начинается с чёрного кадра — по нему монтаж находит начало
+                if (track == null) { track = new System.Text.StringBuilder("frame;highlight;angle;gap;bx;by\n"); trackFrame = 0; trackLive = true; liveTake++; liveMark = 0.25f; Toast("Трек мяча: запись (T — закончить)"); }
+                else { SaveTrack(); Toast("Трек мяча сохранён в Recordings"); }
+            }
             bool shift = kb != null && kb.shiftKey.isPressed;
             int prev = camMode;
             if ((kb != null && kb.cKey.wasPressedThisFrame) || (gp != null && gp.rightStickButton.wasPressedThisFrame))
@@ -769,6 +790,7 @@ namespace Arena.Game
             if (state == State.Playing && net != null && netMenu) Panel(w, h, "Онлайн-матч идёт", "Esc / Start — вернуться в игру     B / Backspace — выйти из комнаты");
             if (toastT > 0) { var c = new Color(1, 1, 1, Mathf.Clamp01(toastT * 2)); Shadowed(new Rect(0, h * 0.08f, w, 30), toast, mid, c); }
             if (state == State.Paused) Panel(w, h, "Пауза", "A / Enter — продолжить     B / Backspace — в меню");
+            if (liveMark > 0) { GUI.color = Color.black; GUI.DrawTexture(new Rect(0, 0, w, h), Texture2D.whiteTexture); GUI.color = Color.white; } // метка начала дубля (T)
             if (state == State.Ended && match.Mvp() != null) { MvpDimGui(w, h); MvpGui(w, h, EndedHint()); } // итоги матча и лучший игрок
             else if (state == State.Ended)
             {

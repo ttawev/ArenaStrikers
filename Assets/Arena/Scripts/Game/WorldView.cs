@@ -316,7 +316,7 @@ namespace Arena.Game
                 if (Vector3.Distance(penta[i], penta[j]) < edge && Vector3.Distance(penta[j], penta[k]) < edge && Vector3.Distance(penta[i], penta[k]) < edge)
                     centers.Add((penta[i] + penta[j] + penta[k]).normalized);
             var col = new Color32[W * H]; var nrm = new Color32[W * H]; var seam = new float[W * H];
-            Color32 dark = new Color32(20, 38, 64, 255), white = new Color32(240, 242, 246, 255), line = new Color32(150, 156, 168, 255);
+            Color32 dark = new Color32(16, 16, 18, 255), white = new Color32(246, 246, 244, 255), line = new Color32(70, 70, 74, 255); // классика: чёрные пятиугольники, белые шестиугольники, тёмные швы
             for (int y = 0; y < H; y++)
             {
                 float th = (y + 0.5f) / H * Mathf.PI; // от южного полюса к северному
@@ -332,10 +332,10 @@ namespace Arena.Game
                         if (dt > b1) { b2 = b1; b1 = dt; bi = c; } else if (dt > b2) b2 = dt;
                     }
                     float g = b1 - b2; // у шва две грани почти равны
-                    float sm = Mathf.Clamp01(1 - g / 0.018f);
+                    float sm = Mathf.Clamp01(1 - g / 0.011f); // тонкий шов
                     seam[y * W + x] = sm;
                     Color32 basec = bi < 12 ? dark : white;
-                    col[y * W + x] = Color32.Lerp(basec, line, sm * 0.85f);
+                    col[y * W + x] = Color32.Lerp(basec, line, sm * (bi < 12 ? 0.3f : 0.9f));
                 }
             }
             for (int y = 0; y < H; y++)
@@ -350,7 +350,7 @@ namespace Arena.Game
             tex.SetPixels32(col); tex.Apply(true, true);
             var nt = new Texture2D(W, H, TextureFormat.RGBA32, true, true) { anisoLevel = 4, filterMode = FilterMode.Trilinear, wrapModeU = TextureWrapMode.Repeat, wrapModeV = TextureWrapMode.Clamp };
             nt.SetPixels32(nrm); nt.Apply(true, true);
-            var mat = new Material(Mat.Solid(Color.white, 0.62f));
+            var mat = new Material(Mat.Solid(Color.white, 0.72f)); // гладкая кожа с бликом
             mat.SetTexture("_BaseMap", tex);
             mat.SetTexture("_BumpMap", nt); mat.SetFloat("_BumpScale", 1f); mat.EnableKeyword("_NORMALMAP");
             return mat;

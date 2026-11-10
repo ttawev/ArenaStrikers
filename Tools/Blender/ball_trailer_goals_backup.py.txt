@@ -1,0 +1,486 @@
+# ======================== SpellStrike — трейлер «Мяч в центре», 26 с, 16:9 (YouTube) ========================
+# Чёрный экран, тишина → прожекторы включаются по одному → в центре поля мяч, камера медленно наезжает,
+# а её перебивают быстрые флэшбеки: мяч залетает в ворота по-разному (без игроков) → свет гаснет →
+# логотип SpellStrike «COMING SOON».
+# Таймлайн — в ball_cues.py, звук — ball_audio.py (запустить первым: python ball_audio.py → Builds/Trailer/ball_audio.wav).
+# Запуск: Blender 5.2 → File → New → General → Scripting → Open → Tools/Blender/ball_trailer.py → Run Script.
+# Сохраняет Builds/Trailer/ball_trailer_h_en.blend; рендер Ctrl+F12 → Builds/Trailer/spellstrike_ball_trailer_h_en_*.mp4.
+# Стадион, свет, мяч и огонь — из trailer.py, логотип — logo.py. Героев в ролике нет.
+import bpy, bmesh, math, os, sys, random
+from mathutils import Vector
+
+ROOT = os.environ.get('ARENA_ROOT') or r'C:\Users\user\ArenaStrikers'
+sys.path.insert(0, os.path.join(ROOT, 'Tools', 'Blender'))
+for m_ in ('trailer', 'ball_cues', 'logo'):
+    sys.modules.pop(m_, None)   # повторный запуск в том же Blender — свежие версии
+import trailer as T
+import ball_cues as Q
+
+# ===== НАСТРОЙКИ ВЕРСИИ (поменяй и запусти скрипт заново) =====
+FORMAT = os.environ.get('ARENA_FORMAT') or 'horizontal'   # 'horizontal' — 1920×1080 (YouTube); 'vertical' — 1080×1920 (Shorts)
+LANG = os.environ.get('ARENA_LANG') or 'en'               # 'en' — «COMING SOON»; 'ru' — «СКОРО»
+# =================================================================
+TAG = '%s_%s' % ('h' if FORMAT == 'horizontal' else 'v', LANG)
+FB = Q.FB
+T.F_END = Q.F_END
+T.G = FB['final']['hit']        # табло 0:1 и «ГОЛ!» на бортах — у финального гола
+if LANG == 'en':
+    T.ADS = ['SPELLSTRIKE', 'PLAY WITH FRIENDS', 'COMING SOON', 'SPELL • STRIKE']
+OUT = T.OUT
+BR = T.BALL_R
+GX = T.FL / 2                   # линия ворот, в которые летят все мячи (+X)
+NETX = GX + T.NET_D - 0.08      # где мяч упирается в заднюю сетку
+AUDIO = os.path.join(OUT, 'ball_audio.wav')
+BASE_EXPOSURE = -0.4
+STILLS = os.environ.get('ARENA_STILLS')   # проверка Claude: сцена без сохранения
+random.seed(5)
+
+# ---------------------------------------------------------------- помощники
+def keys(sock, pairs, interp=None):
+    """Ключи на входе узла (default_value)."""
+    for f, v in pairs:
+        sock.default_value = v; sock.keyframe_insert('default_value', frame=f)
+
+def const_keys(idblock):
+    for fc in T.fcurves_of(idblock):
+        for kp in fc.keyframe_points: kp.interpolation = 'CONSTANT'
+
+def emit_mat(name, color, strength, alpha=None):
+    return T.mat(name, color, 0.4, emit=color, emit_str=strength, alpha=alpha)
+
+def burst(name, pos, f, color, size=1.0, life=10, n=1, alpha=0.85, glow=8.0, spread=0.9):
+    """Вспышка-шар: раздувается и гаснет (телепорт, ледяная пыль)."""
+    m = emit_mat(name, color, glow, alpha=0.9)
+    b = T.bsdf_of(m.node_tree.nodes)
+    keys(b.inputs['Alpha'], [(1, 0.0), (f - 1, 0.0), (f, alpha), (f + life, 0.0)])
+    keys(b.inputs['Emission Strength'], [(f, glow), (f + life, 0.0)])
+    for i in range(n):
+        me = bpy.data.meshes.new(name); bm = bmesh.new(); bmesh.ops.create_icosphere(bm, subdivisions=3, radius=1.0)
+        for fc in bm.faces: fc.smooth = True
+        bm.to_mesh(me); bm.free(); me.materials.append(m)
+        o = T.link(bpy.data.objects.new(name, me))
+        off = Vector(((random.random() - 0.5) * spread, (random.random() - 0.5) * spread, random.random() * spread * 0.6)) if n > 1 else Vector()
+        o.location = Vector(pos) + off
+        s = size * (0.6 + 0.6 * random.random()) if n > 1 else size
+        for fr, k in ((1, 0.001), (f - 1, 0.001), (f, s * 0.25), (f + life, s), (f + life + 1, 0.001)):
+            o.scale = (k, k, k); o.keyframe_insert('scale', frame=fr)
+        try: o.visible_shadow = False
+        except Exception: pass
+
+def spark_trail(ball, f0, f1, color, name, count=700, size=0.035):
+    """След из искр за мячом своего цвета."""
+    m1 = emit_mat(name + 'A', color, 16); m2 = emit_mat(name + 'B', (1, 1, 1), 20)
+    c = bpy.data.collections.new(name + 'Bits'); bpy.context.scene.collection.children.link(c)
+    for i, mm in enumerate((m1, m1, m2)):
+        me = bpy.data.meshes.new(name); bm = bmesh.new(); bmesh.ops.create_icosphere(bm, subdivisions=1, radius=1.0); bm.to_mesh(me); bm.free()
+        me.materials.append(mm); c.objects.link(bpy.data.objects.new(name + str(i), me))
+    T.hide_collection(c)
+    ball.modifiers.new(name, 'PARTICLE_SYSTEM')
+    ps = ball.particle_systems[-1].settings
+    ps.count = count; ps.frame_start = f0; ps.frame_end = f1; ps.lifetime = 14; ps.lifetime_random = 0.5
+    ps.emit_from = 'VOLUME'; ps.normal_factor = 0.0; ps.factor_random = 0.15
+    ps.render_type = 'COLLECTION'; ps.instance_collection = c; ps.use_collection_pick_random = True
+    ps.particle_size = size; ps.size_random = 0.6; ps.effector_weights.gravity = 0.0
+
+def bezier(p0, p1, p2, t):
+    return p0 * (1 - t) ** 2 + p1 * 2 * t * (1 - t) + p2 * t * t
+
+def ease(a):
+    a = min(max(a, 0.0), 1.0); return a * a * (3 - 2 * a)
+
+# ================================================================ сборка
+def main():
+    T.clean()
+    sc = bpy.context.scene
+    T.setup_render(sc)
+    T.setup_compositor(sc)
+    sc.frame_end = Q.F_END
+    if FORMAT == 'horizontal':
+        sc.render.resolution_x, sc.render.resolution_y = 1920, 1080
+    sc.render.filepath = os.path.join(OUT, 'spellstrike_ball_trailer_%s_' % TAG)
+    st = bpy.data.collections.new('Stadium'); sc.collection.children.link(st)
+
+    print('[ball] стадион...')
+    T.build_pitch(st)
+    back_home = T.build_goal(1, T.HOME_L, st)
+    T.build_goal(-1, T.AWAY_L, st)
+    strips = T.build_boards(st)
+    boards_after_goal()
+    rows = T.build_stands(st)
+    crowd_jump(rows)
+    spots = T.build_lights(st, strips)
+    relight(spots, strips)
+
+    print('[ball] мяч и голы...')
+    ball, ball_em = build_ball(st)
+    animate_ball(ball)
+    ball_glow(ball, ball_em)
+    effects(ball, st)
+    bulges(back_home)
+
+    print('[ball] камеры...')
+    cams = build_cameras()
+    exposure(sc)
+    title(cams['title'])
+    add_audio(sc)
+
+    if STILLS:
+        return
+    sc.frame_set(1)
+    p = os.path.join(OUT, 'ball_trailer_%s.blend' % TAG)
+    try:
+        bpy.ops.wm.save_as_mainfile(filepath=p); print('[ball] сохранено:', p)
+    except Exception as e:
+        print('[ball] не сохранилось:', e)
+    print('[ball] готово. Рендер: Ctrl+F12 ->', sc.render.filepath)
+
+# ---------------------------------------------------------------- борта и трибуны
+def boards_after_goal():
+    """«ГОЛ!» на бортах горит только во время финального флэшбека, потом снова реклама."""
+    end = FB['final']['end']
+    for o in bpy.data.objects:
+        if o.name.startswith('AdGoal'):
+            if LANG == 'en': o.data.body = 'GOAL!'
+            T.vis_keys(o, [(end, False)])
+        elif o.name.startswith('AdText'):
+            T.vis_keys(o, [(end, True)])
+
+def crowd_jump(rows):
+    """Трибуны слегка качаются; подпрыгивают только в флэшбеках-голах (в «воспоминаниях»)."""
+    hits = [(FB[k]['hit'], FB[k]['end']) for k in Q.ORDER]
+    for o, home_share in rows:
+        ph = random.random() * 6.28
+        base = o.location.z
+        for f in range(1, Q.F_END + 1, 3):
+            jump = 0.0
+            for h, e in hits:
+                if h <= f <= e:
+                    jump = abs(math.sin(f * 0.55 + ph)) * (0.06 + 0.16 * (1 - home_share))
+            o.location.z = base + math.sin(f * 0.25 + ph) * 0.012 + jump
+            o.keyframe_insert('location', index=2, frame=f)
+
+# ---------------------------------------------------------------- свет: темно → по одному включаются → по одному гаснут
+def relight(spots, strips):
+    on_all, off_all = Q.LIGHTS_ON[-1], Q.LIGHTS_OFF[-1]
+    fin = FB['final']
+    for i, (L, lc) in enumerate(spots):
+        L.animation_data_clear()                       # стробоскоп trailer.py не нужен — свой ниже
+        f_on, f_off = Q.LIGHTS_ON[i], Q.LIGHTS_OFF[i]
+        seq = [(1, 0.0, lc), (f_on, 26000.0, lc)]
+        for k in range(0, fin['end'] - fin['hit'], 3):  # стробоскоп в цвет синих только на финальном голе
+            on = (k // 3 + i) % 2 == 0
+            seq.append((fin['hit'] + k, 70000.0 if on else 16000.0, T.HOME_L if on else lc))
+        seq += [(fin['end'], 26000.0, lc), (f_off, 0.0, lc)]
+        for f, e, c in seq:
+            L.energy = e; L.color = c
+            L.keyframe_insert('energy', frame=f); L.keyframe_insert('color', frame=f)
+        const_keys(L)
+    panels = [m for m in bpy.data.materials if m.name.startswith('FloodPanel')]
+    for i, m in enumerate(panels):
+        s = T.bsdf_of(m.node_tree.nodes).inputs['Emission Strength']; v = s.default_value
+        f_on, f_off = Q.LIGHTS_ON[i % 4], Q.LIGHTS_OFF[i % 4]
+        keys(s, [(1, 0.0), (f_on - 1, 0.0), (f_on, v * 1.6), (f_on + 8, v), (f_off - 1, v), (f_off, 0.0)])
+    # неон, лампы, реклама, линии поля, табло — загораются с последней мачтой и гаснут с последней
+    names = ('StandNeon', 'Lamp', 'AdText', 'StandEdge', 'Lines', 'AdGoal', 'Post_', 'AdStrip', 'Score', 'Net_')
+    for m in bpy.data.materials:
+        if not m.name.startswith(names): continue
+        s = T.bsdf_of(m.node_tree.nodes).inputs['Emission Strength']; v = s.default_value
+        keys(s, [(1, 0.0), (on_all - 1, 0.0), (on_all, v), (off_all - 1, v), (off_all, 0.0)])
+    crowd = bpy.data.materials.get('Crowd')
+    if crowd:
+        keys(T.bsdf_of(crowd.node_tree.nodes).inputs['Emission Strength'],
+             [(1, 0.02), (on_all - 1, 0.02), (on_all, 0.35), (off_all - 1, 0.35), (off_all, 0.02)])
+    for o in bpy.data.objects:
+        if o.type == 'LIGHT' and o.data.name.startswith('Fill'):
+            e = o.data.energy
+            for f, v in ((1, 0.0), (on_all - 1, 0.0), (on_all, e), (off_all - 1, e), (off_all, 0.0)):
+                o.data.energy = v; o.data.keyframe_insert('energy', frame=f)
+        if o.type == 'LIGHT' and o.data.name.startswith('Moon'):
+            o.data.energy = 0.3
+    # под титром: узкий холодный луч сверху на мяч в темноте
+    kl = bpy.data.lights.new('BallKey', 'SPOT'); kl.energy = 0; kl.color = T.hexc('#a9bcff')
+    kl.spot_size = math.radians(16); kl.spot_blend = 0.85; kl.shadow_soft_size = 0.3
+    ko = T.link(bpy.data.objects.new('BallKey', kl)); ko.location = (-0.8, 0.5, 7.0)
+    ko.rotation_euler = (Vector((0, 0, BR)) - ko.location).to_track_quat('-Z', 'Y').to_euler()
+    for f, e in ((1, 0), (Q.TITLE - 1, 0), (Q.TITLE, 300)):
+        kl.energy = e; kl.keyframe_insert('energy', frame=f)
+    const_keys(kl)
+
+# ---------------------------------------------------------------- мяч как в игре
+def build_ball(coll):
+    """Классический мяч (как в игре, WorldView.BallMaterial): 12 чёрных пятиугольников, 20 белых шестиугольников.
+    Швы — настоящие канавки в геометрии, панели чуть выпуклые; цвет панелей — атрибут 'Panel'."""
+    t = (1 + 5 ** 0.5) / 2
+    penta = [Vector(v).normalized() for v in ((-1, t, 0), (1, t, 0), (-1, -t, 0), (1, -t, 0), (0, -1, t), (0, 1, t),
+                                              (0, -1, -t), (0, 1, -t), (t, 0, -1), (t, 0, 1), (-t, 0, -1), (-t, 0, 1))]
+    edge = (penta[0] - penta[1]).length * 1.01
+    centers = list(penta)
+    for i in range(12):
+        for j in range(i + 1, 12):
+            for k in range(j + 1, 12):
+                if (penta[i] - penta[j]).length < edge and (penta[j] - penta[k]).length < edge and (penta[i] - penta[k]).length < edge:
+                    centers.append((penta[i] + penta[j] + penta[k]).normalized())
+    me = bpy.data.meshes.new('Ball'); bm = bmesh.new()
+    bmesh.ops.create_icosphere(bm, subdivisions=6, radius=1.0)
+    info = {}
+    for v in bm.verts:
+        d = v.co.normalized()
+        dots = sorted(((d.dot(c), i) for i, c in enumerate(centers)), reverse=True)
+        g = dots[0][0] - dots[1][0]                       # у шва две панели почти равны
+        seam = max(0.0, 1 - g / 0.022)                    # ширина канавки
+        puff = min(1.0, g / 0.12)                         # панель чуть выпуклая к центру
+        v.co = d * BR * (1 - 0.022 * seam ** 1.5 + 0.006 * puff)
+        info[v.index] = (dots[0][1] < 12, seam)
+    for f in bm.faces: f.smooth = True
+    col = bm.loops.layers.float_color.new('Panel')
+    dark, white, line = (0.012, 0.012, 0.014, 1), (0.9, 0.9, 0.88, 1), (0.05, 0.05, 0.055, 1)
+    for f in bm.faces:
+        for l in f.loops:
+            is_p, sm = info[l.vert.index]
+            base = dark if is_p else white
+            k = sm * (0.3 if is_p else 0.9)
+            l[col] = tuple(base[i] * (1 - k) + line[i] * k for i in range(4))
+    bm.to_mesh(me); bm.free()
+    ball = T.link(bpy.data.objects.new('Ball', me), coll)
+    m = bpy.data.materials.new('Ball'); m.use_nodes = True
+    N = m.node_tree.nodes; L = m.node_tree.links; b = T.bsdf_of(N)
+    at = N.new('ShaderNodeVertexColor'); at.layer_name = 'Panel'
+    L.new(at.outputs['Color'], b.inputs['Base Color'])
+    b.inputs['Roughness'].default_value = 0.32                  # гладкая кожа с бликом
+    for k, v in (('Coat Weight', 0.35), ('Coat Roughness', 0.15)):
+        try: b.inputs[k].default_value = v
+        except Exception: pass
+    b.inputs['Emission Color'].default_value = (1.0, 0.35, 0.05, 1)
+    me.materials.append(m)
+    return ball, b.inputs['Emission Strength']
+
+# ---------------------------------------------------------------- путь мяча
+def settle(pt, f, hit):
+    """После удара в сетку мяч сползает по ней на газон."""
+    a = min(1.0, (f - hit) / 14)
+    return Vector((pt.x - 0.15 * a, pt.y, pt.z - (pt.z - BR) * a * a + abs(math.sin(a * 7)) * 0.05 * (1 - a)))
+
+def ball_at(f):
+    ctr = Vector((0, 0, BR)); under = Vector((0, 0, -30))
+    def inside(k): return FB[k]['start'] <= f < FB[k]['end']
+    if inside('fire'):                                   # огненный в девятку
+        c = FB['fire']; p0 = Vector((7.0, 1.0, BR)); pt = Vector((NETX, 1.45, 0.47))
+        if f < c['kick']: return p0
+        if f <= c['hit']:
+            a = (f - c['kick']) / (c['hit'] - c['kick'])
+            return p0.lerp(pt, a) + Vector((0, 0, math.sin(a * math.pi) * 0.2))
+        return settle(pt, f, c['hit'])
+    if inside('curve'):                                  # кручёный по дуге
+        c = FB['curve']; p0 = Vector((3.5, -4.2, BR)); ctrl = Vector((8.5, 3.0, 0.9)); pt = Vector((NETX, -1.35, 0.3))
+        if f < c['kick']: return p0
+        if f <= c['hit']:
+            t = (f - c['kick']) / (c['hit'] - c['kick'])
+            return bezier(p0, ctrl, pt, 1 - (1 - t) ** 1.6)
+        return settle(pt, f, c['hit'])
+    if inside('ice'):                                    # ледяной, прямо по центру
+        c = FB['ice']; p0 = Vector((7.0, -0.2, BR)); pt = Vector((NETX, -0.5, 0.33))
+        if f < c['kick']: return p0
+        if f <= c['hit']:
+            a = (f - c['kick']) / (c['hit'] - c['kick'])
+            return p0.lerp(pt, a) + Vector((0, 0, math.sin(a * math.pi) * 0.1))
+        return settle(pt, f, c['hit'])
+    if inside('post'):                                   # в штангу и в ворота
+        c = FB['post']; p0 = Vector((8.0, -0.6, BR)); pp = Vector((GX - 0.15, T.GOAL_W / 2 - 0.14, 0.3)); pt = Vector((NETX, 1.0, 0.22))
+        if f < c['kick']: return p0
+        if f <= c['post']:
+            a = (f - c['kick']) / (c['post'] - c['kick'])
+            return p0.lerp(pp, a) + Vector((0, 0, math.sin(a * math.pi) * 0.15))
+        if f <= c['hit']:
+            return pp.lerp(pt, (f - c['post']) / (c['hit'] - c['post']))
+        return settle(pt, f, c['hit'])
+    if inside('lob'):                                    # парашют
+        c = FB['lob']; p0 = Vector((6.8, 0.3, BR)); pt = Vector((NETX, 0.15, 0.25))
+        if f < c['kick']: return p0
+        if f <= c['hit']:
+            a = (f - c['kick']) / (c['hit'] - c['kick'])
+            p = p0.lerp(pt, a); p.z = BR + (pt.z - BR) * a + 2.4 * a * (1 - a)
+            return p
+        return settle(pt, f, c['hit'])
+    if inside('blink'):                                  # возникает из вспышки и катится в ворота
+        c = FB['blink']; p0 = Vector((10.2, 0.3, BR + 0.25)); pt = Vector((NETX, 0.3, BR + 0.02))
+        if f < c['kick']: return under
+        if f <= c['hit']:
+            a = (f - c['kick']) / (c['hit'] - c['kick'])
+            p = p0.lerp(pt, 1 - (1 - a) ** 1.5); p.z = BR + 0.25 * (1 - a) ** 2 + abs(math.sin(a * 6)) * 0.04 * (1 - a)
+            return p
+        return settle(pt, f, c['hit'])
+    if inside('final'):                                  # огненный прямо в камеру
+        c = FB['final']; p0 = Vector((6.6, 0.35, BR)); pt = Vector((NETX, 0.25, 0.36))
+        if f < c['kick']: return p0
+        if f <= c['hit']:
+            a = (f - c['kick']) / (c['hit'] - c['kick'])
+            return p0.lerp(pt, a) + Vector((0, 0, math.sin(a * math.pi) * 0.18))
+        return settle(pt, f, c['hit'])
+    return ctr                                           # мяч в центре поля
+
+def animate_ball(ball):
+    spin = 0.0; prev = None
+    for fr in range(1, Q.F_END + 1):
+        p = ball_at(fr)
+        if prev is not None and (p - prev).length < 1.0: spin += (p - prev).length / BR
+        prev = p
+        ball.location = p; ball.keyframe_insert('location', frame=fr)
+        ball.rotation_euler = (0, spin, 0.3 * spin); ball.keyframe_insert('rotation_euler', frame=fr)
+    T.set_interp(ball, 'location', 'LINEAR')
+
+def ball_glow(ball, em):
+    """Мяч светится в огненных (оранжевый), ледяном (голубой) и телепорт-флэшбеке (фиолетовый).
+    До удара мяч лежит в кадре и «заряжается» — свечение нарастает, видно, что сейчас полетит."""
+    col = T.bsdf_of(ball.data.materials[0].node_tree.nodes).inputs['Emission Color']
+    fire, ice_c, violet = (1.0, 0.35, 0.05, 1), (*T.srgb((0.4, 0.85, 1.0)), 1), (*T.srgb((0.62, 0.3, 1.0)), 1)
+    seq_s, seq_c = [(1, 0.0)], [(1, fire)]
+    for k, c, s in (('fire', fire, 9.0), ('ice', ice_c, 5.0), ('blink', violet, 2.5), ('final', fire, 10.0)):
+        b = FB[k]
+        seq_s += [(b['start'], 0.0 if k != 'blink' else s), (b['kick'] - 1, s * 0.5 if k != 'blink' else s), (b['kick'], s),
+                  (b['end'] - 1, s * 0.5), (b['end'], 0.0)]
+        seq_c += [(b['start'], c)]
+    keys(em, seq_s)
+    keys(col, seq_c)
+    for fc in T.fcurves_of(ball.data.materials[0].node_tree):
+        for kp in fc.keyframe_points: kp.interpolation = 'CONSTANT' if 'Emission Color' in fc.data_path else 'LINEAR'
+
+# ---------------------------------------------------------------- эффекты по флэшбекам
+def effects(ball, st):
+    # лежащий мяч сначала только разгорается светом (его хорошо видно), огонь и иней вспыхивают за миг до удара
+    T.fire_trail(ball, FB['fire']['kick'] - 3, FB['fire']['hit'] + 2, st)
+    T.fire_trail(ball, FB['final']['kick'] - 3, FB['final']['hit'] + 3, st)
+    spark_trail(ball, FB['curve']['kick'], FB['curve']['hit'], T.srgb((0.35, 0.95, 1.0)), 'Spin')
+    spark_trail(ball, FB['ice']['kick'] - 2, FB['ice']['hit'], T.srgb((0.7, 0.92, 1.0)), 'Frost', count=900, size=0.04)
+    spark_trail(ball, FB['post']['kick'], FB['post']['hit'], (1, 1, 1), 'Streak', count=200, size=0.014)
+    spark_trail(ball, FB['lob']['kick'], FB['lob']['hit'], T.srgb((1.0, 0.85, 0.55)), 'Arc', count=250, size=0.016)
+    # лёд: сетка покрывается инеем, у ворот разлетается ледяная пыль
+    ice = FB['ice']
+    net = bpy.data.materials.get('Net_1')
+    if net:
+        b = T.bsdf_of(net.node_tree.nodes)
+        base_c = tuple(b.inputs['Emission Color'].default_value)
+        frost = (*T.srgb((0.55, 0.9, 1.0)), 1)
+        keys(b.inputs['Emission Color'], [(1, base_c), (ice['hit'] - 1, base_c), (ice['hit'], frost), (ice['end'], base_c)])
+        for fc in T.fcurves_of(net.node_tree):
+            if 'Emission Color' in fc.data_path:
+                for kp in fc.keyframe_points: kp.interpolation = 'CONSTANT'
+        keys(b.inputs['Emission Strength'], [(ice['hit'] - 1, 0.1), (ice['hit'], 2.5), (ice['end'] - 1, 1.2), (ice['end'], 0.1)])
+    burst('IceDust', (NETX - 0.1, -0.5, 0.33), ice['hit'], T.srgb((0.75, 0.95, 1.0)), size=0.12, life=10, n=12, alpha=0.7, glow=4.0, spread=0.8)
+    # штанга: «дзынь» — вспышка на штанге
+    post = FB['post']
+    pm = bpy.data.materials.get('Post_1')
+    if pm:
+        s = T.bsdf_of(pm.node_tree.nodes).inputs['Emission Strength']
+        keys(s, [(post['post'] - 1, 0.6), (post['post'], 8.0), (post['post'] + 8, 0.6)])
+    burst('PostSpark', (GX - 0.02, T.GOAL_W / 2 - 0.05, 0.3), post['post'], (1, 1, 1), size=0.07, life=6, n=6, glow=12.0, spread=0.25)
+    # телепорт: фиолетовая вспышка, из которой возникает мяч
+    bl = FB['blink']; violet = T.srgb((0.62, 0.3, 1.0))
+    burst('BlinkIn', (10.2, 0.3, 0.35), bl['kick'], violet, size=0.55, life=7, alpha=0.5)
+    burst('BlinkSpark', (10.2, 0.3, 0.35), bl['kick'], (1, 1, 1), size=0.12, life=9, n=8, spread=0.7)
+
+def bulges(back):
+    """Задняя сетка «мешком» при каждом голе: свой ключ формы на каждую точку удара."""
+    back.shape_key_add(name='Basis')
+    hits = {'fire': (1.45, 0.47, 1.0), 'curve': (-1.35, 0.3, 0.9), 'ice': (-0.5, 0.33, 1.0), 'post': (1.0, 0.22, 0.6),
+            'lob': (0.15, 0.25, 0.8), 'blink': (0.3, 0.15, 0.5), 'final': (0.25, 0.36, 1.2)}
+    for k, (cy, cz, amp) in hits.items():
+        sk = back.shape_key_add(name='Bulge_' + k)
+        for i, v in enumerate(back.data.vertices):
+            y, z = v.co.y, v.co.z
+            u = (y + T.GOAL_W / 2) / T.GOAL_W; w = z / T.GOAL_H
+            g = math.exp(-((y - cy) ** 2) / (2 * 0.8 ** 2) - ((z - cz) ** 2) / (2 * 0.25 ** 2))
+            d = 0.42 * g * math.sin(math.pi * u) * math.cos(math.pi * w * 0.5)
+            sk.data[i].co = v.co + Vector((d, 0, 0))
+        h, e = FB[k]['hit'], FB[k]['end']
+        for f, val in ((1, 0), (h - 1, 0), (h + 3, amp), (h + 9, -0.25 * amp), (h + 15, 0.45 * amp), (h + 22, -0.1 * amp), (e, 0.1 * amp), (e + 1, 0)):
+            if f > e + 1: continue
+            sk.value = val; sk.keyframe_insert('value', frame=f)
+
+# ---------------------------------------------------------------- камеры
+def build_cameras():
+    cams = {}
+    def cam(k, lens, fstop, kk):
+        c, t = T.camera('Cam_' + k, lens, fstop)
+        T.cam_keys(c, t, kk); T.ease_all(c); T.ease_all(t); cams[k] = c
+    # главный план: камера низко со стороны «наших» ворот, мяч в центре, медленный наезд — к концу быстрее
+    cam('center', 32, 2.2, [(1, (7.6, 1.25, 1.35), (0, 0, 0.13), None), (300, (3.9, 0.65, 0.62), (0, 0, 0.13), None),
+                            (Q.LIGHTS_OFF[0], (1.35, 0.22, 0.24), (0, 0, 0.135), None), (Q.DARK, (0.95, 0.15, 0.17), (0, 0, 0.14), None)])
+    F = FB
+    # Во всех флэшбеках мяч сначала лежит в кадре, потом срывается с места: видно, откуда он летит.
+    # 1. огненный в девятку — низко за мячом: мяч загорается, удар, летит в дальний верхний угол; камера чуть едет следом
+    cam('fire', 30, 2.4, [(F['fire']['start'], (5.95, 1.15, 0.2), (12.0, 1.35, 0.4), None), (F['fire']['kick'], (6.0, 1.15, 0.2), (12.0, 1.35, 0.4), None),
+                          (F['fire']['end'] - 1, (6.9, 1.15, 0.3), (12.0, 1.4, 0.45), None)])
+    # 2. кручёный — сверху-сбоку: сначала смотрим на мяч, потом камера ведёт дугу до ворот
+    cam('curve', 22, 4.0, [(F['curve']['start'], (4.2, -7.2, 2.3), (5.0, -3.2, 0.15), None), (F['curve']['kick'], (4.3, -7.2, 2.3), (5.4, -2.9, 0.15), None),
+                           (F['curve']['hit'], (5.4, -7.0, 2.1), (10.8, -0.8, 0.3), None), (F['curve']['end'] - 1, (5.6, -7.0, 2.0), (11.0, -0.8, 0.3), None)])
+    # 3. ледяной — за мячом, низко, ворота прямо
+    cam('ice', 28, 2.8, [(F['ice']['start'], (5.3, 0.45, 0.3), (12.0, -0.3, 0.33), None), (F['ice']['end'] - 1, (6.1, 0.35, 0.3), (12.0, -0.4, 0.33), None)])
+    # 4. штанга — за мячом по диагонали: мяч, штанга и ворота в одном кадре
+    cam('post', 30, 2.8, [(F['post']['start'], (6.45, -1.55, 0.32), (12.0, 1.7, 0.3), None), (F['post']['kick'], (6.5, -1.5, 0.32), (12.0, 1.7, 0.3), None),
+                          (F['post']['end'] - 1, (7.6, -0.9, 0.34), (12.0, 1.5, 0.3), None)])
+    # 5. парашют — строго сбоку, видна высокая дуга
+    cam('lob', 24, 5.6, [(F['lob']['start'], (9.4, -6.2, 0.9), (9.8, 0.2, 0.95), None), (F['lob']['end'] - 1, (9.9, -6.1, 0.8), (10.6, 0.2, 0.75), None)])
+    # 6. телепорт — спереди-сбоку
+    cam('blink', 30, 2.8, [(F['blink']['start'], (8.4, -1.6, 0.55), (11.2, 0.3, 0.35), None), (F['blink']['end'] - 1, (8.7, -1.5, 0.5), (11.6, 0.3, 0.32), None)])
+    # 7. финал: (а) мяч горит на траве, низко за ним — удар; (б) склейка за сетку, огненный мяч прямо в объектив
+    cam('final_a', 30, 2.4, [(F['final']['start'], (5.55, 0.42, 0.19), (12.0, 0.3, 0.4), None), (F['final']['cut'] - 1, (5.75, 0.42, 0.2), (12.0, 0.3, 0.4), None)])
+    cam('final', 18, 3.2, [(F['final']['cut'], (12.62, 0.3, 0.45), (7.6, 0.4, 0.55), None), (F['final']['hit'], (12.6, 0.25, 0.43), (8.0, 0.35, 0.5), None),
+                           (F['final']['end'] - 1, (12.62, 0.6, 0.55), (7.6, 0.3, 0.6), None)])
+    # титр: мяч в темноте под лучом, камера у травы
+    cam('title', 40, 1.6, [(Q.TITLE, (-2.4, -0.3, 0.16), (0, 0, 0.45), None), (Q.F_END, (-2.0, -0.25, 0.17), (0, 0, 0.47), None)])
+    order = [(1, 'center')]
+    for k in Q.ORDER:
+        if k == 'final':
+            order += [(FB[k]['start'], 'final_a'), (FB[k]['cut'], 'final'), (FB[k]['end'], 'center')]
+        else:
+            order += [(FB[k]['start'], k), (FB[k]['end'], 'center')]
+    order.append((Q.TITLE, 'title'))
+    for f, k in order: T.cut(f, cams[k])
+    bpy.context.scene.camera = cams['center']
+    return cams
+
+# ---------------------------------------------------------------- экспозиция: чёрный экран, вспышки на склейках, затемнения
+def exposure(sc):
+    vs = sc.view_settings; B = BASE_EXPOSURE
+    pts = {1: -14.0, Q.LIGHTS_ON[0] - 1: -14.0, Q.LIGHTS_ON[0]: B}
+    for k in Q.ORDER:
+        for c in (FB[k]['start'], FB[k]['end']):
+            pts.setdefault(c - 1, B); pts[c] = B + 2.2; pts[c + 3] = B
+    fin = FB['final']
+    pts[fin['hit']] = B + 1.4; pts[fin['hit'] + 4] = B
+    for i, f in enumerate(Q.LIGHTS_OFF):   # каждая погасшая мачта — заметно темнее (ступенькой)
+        pts[f - 1] = B - 0.7 * i; pts[f] = B - 0.7 * (i + 1)
+    pts.update({Q.DARK: -14.0, Q.TITLE - 1: -14.0, Q.TITLE: -6.0,
+                Q.TITLE + 24: B - 0.3, Q.F_END - 12: B - 0.3, Q.F_END: -10.0})
+    for f in sorted(pts):
+        vs.exposure = pts[f]; vs.keyframe_insert('exposure', frame=f)
+    hard = (Q.LIGHTS_ON[0] - 1, Q.TITLE - 1) + tuple(f - 1 for f in Q.LIGHTS_OFF)
+    for fc in T.fcurves_of(sc):
+        if fc.data_path == 'view_settings.exposure':
+            for kp in fc.keyframe_points:
+                kp.interpolation = 'CONSTANT' if int(round(kp.co[0])) in hard else 'LINEAR'
+
+# ---------------------------------------------------------------- титр и звук
+def title(cam):
+    import logo
+    sz = 0.6 if FORMAT == 'horizontal' else 0.37   # крупно, над мячом
+    logo.spellstrike(cam, Q.TITLE_POP, ROOT, tagline='COMING SOON' if LANG == 'en' else 'СКОРО', size=sz,
+                     y0=1.35 if FORMAT == 'horizontal' else 0.95)
+
+def add_audio(sc):
+    if not os.path.exists(AUDIO):
+        print('[ball] звука нет (', AUDIO, ') — сначала запусти ball_audio.py'); return
+    sc.sequence_editor_create()
+    se = sc.sequence_editor
+    coll = getattr(se, 'strips', None)
+    if coll is None: coll = se.sequences
+    coll.new_sound('ball_audio', AUDIO, 1, 1)
+    ff = sc.render.ffmpeg
+    try:
+        ff.audio_codec = 'AAC'; ff.audio_bitrate = 256; ff.audio_channels = 'STEREO'; ff.audio_mixrate = 48000
+    except Exception as e:
+        print('[ball] звук в видео:', e)
+    print('[ball] звук добавлен:', AUDIO)
+
+if __name__ == '__main__' or os.environ.get('ARENA_RUN') == '1':
+    main()

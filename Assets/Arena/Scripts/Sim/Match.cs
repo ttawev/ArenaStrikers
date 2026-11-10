@@ -1,4 +1,4 @@
-// The match: teams, kickoff, the fixed-step update, movement, collisions, ball physics, goals.
+﻿// The match: teams, kickoff, the fixed-step update, movement, collisions, ball physics, goals.
 // Ported 1:1 from the browser prototype "Арена Страйкеров 3D".
 using System;
 using System.Collections.Generic;
@@ -225,10 +225,13 @@ namespace Arena.Sim
         /// <summary>Какой слот управления у этого компьютера (0 — хост или одиночная игра; в онлайне у друзей 1, 2, ...).</summary>
         public int LocalSlot;
         SimPlayer localCache;
+        /// <summary>Ролики (хайлайты): смотреть глазами этого героя — его команда «своя» (Тень видна полупрозрачной). Не для игры и не для сети.</summary>
+        public SimPlayer LocalOverride;
         public SimPlayer Local
         {
             get
             {
+                if (LocalOverride != null && Players.Contains(LocalOverride)) return LocalOverride;
                 if (localCache == null || localCache.HumanSlot != LocalSlot || !Players.Contains(localCache))
                     localCache = Players.Find(p => p.HumanSlot == LocalSlot) ?? (Players.Count > 0 ? Players[0] : null);
                 return localCache;

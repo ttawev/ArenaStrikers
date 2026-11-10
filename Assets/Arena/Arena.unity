@@ -148,6 +148,15 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 47be10b0757e6314c8a25601f273bf95, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::Arena.Game.ArenaGame
+  mvpLight:
+    key: 4
+    keyColor: {r: 1, g: 0.86, b: 0.7, a: 1}
+    rim: 7
+    rimColor: {r: 0.55, g: 0.8, b: 1, a: 1}
+    dim: 0.45
+    glow: 1.5
+    hideOthers: 1
+    hideRadius: 5.2
   tuning:
     speed: 370
     dribble: 0.88
@@ -166,6 +175,17 @@ MonoBehaviour:
     botShootEager: 0.45
     keeperRushDist: 720
     keeperTackle: 170
+    stamina: 1
+    staminaRun: 0.015
+    staminaRegen: 0.25
+    staminaJogRegen: 0.1
+    staminaDelay: 0.7
+    staminaDash: 0.18
+    staminaKick: 0.12
+    staminaLob: 0.1
+    staminaTired: 0.3
+    staminaSlow: 0.78
+    staminaKickoff: 0.3
     receiveAnySide: 1
     lobMin: 250
     lobMax: 1150
@@ -179,6 +199,8 @@ MonoBehaviour:
     fireDelay: 0.4
     firePow: 2300
     fireStun: 1
+    fireAllyPush: 420
+    fireAllyPushTime: 0.703
     fireKeep: 0.3
     fireCd: 8
     curveAmt: 1.3
@@ -195,6 +217,16 @@ MonoBehaviour:
     tpBack: 1
     tpCd: 6
     goalPause: 2.8
+    goldenGoal: 1
+    goldenPause: 2.4
+    goldenMax: 120
+    intro: 1
+    introRun: 2.4
+    introPose: 4.2
+    introVer: 0
+    introToPlace: 1.4
+    callTime: 1.6
+    callBonus: 1.2
   cameraTilt: 52
   cameraDistance: 15
   cameraFov: 38
@@ -274,6 +306,15 @@ MonoBehaviour:
   sfxVolume: 1
   crowdVolume: 0.8
   musicVolume: 0.5
+  youMarker:
+    head: 1
+    ground: 1
+    color: {r: 1, g: 0.82, b: 0.25, a: 1}
+    glow: 1.6
+    headSize: 1
+    headHeight: 1.95
+    constantSize: 1
+    groundAlpha: 0.85
   heroArt:
     height: 1.35
     modelYaw: 0
@@ -316,6 +357,7 @@ MonoBehaviour:
     getUpStart: 0.12
     getUpSpeed: 2
     celebrateSpeed: 1
+    endCelebrateTimes: 2
     showCelebrate: 2.4
     tailAmount: 0
     tailStiff: 5
@@ -325,6 +367,9 @@ MonoBehaviour:
     windUp: 0.35
     flutter: 22
     flutterSpeed: 11
+    ambientSide: {r: 0.3, g: 0.36, b: 0.54, a: 1}
+    ambientGround: {r: 0.17, g: 0.2, b: 0.31, a: 1}
+    fillLight: 0.35
     glow: 0.38
     glowSuper: 0.83
     glowRamp: 2
@@ -340,6 +385,16 @@ MonoBehaviour:
     hookRoll: 0
     hookGrip: 0
     tailFlip: 1
+  menuBackground:
+    orbitSpeed: 5
+    distance: {x: 7, y: 13}
+    height: {x: 1.4, y: 5}
+    fov: 34
+    frameShift: 11
+    ballHover: 12
+    ballLight: 2.5
+    embers: 18
+    sparkles: 14
 --- !u!4 &11679196
 Transform:
   m_ObjectHideFlags: 0

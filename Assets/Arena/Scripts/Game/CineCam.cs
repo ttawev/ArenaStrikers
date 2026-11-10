@@ -58,6 +58,10 @@ namespace Arena.Game
         /// <summary>Начать с текущего положения камеры — чтобы включение было плавным, без рывка.</summary>
         /// <summary>Куда смотрит камера (мяч, ворота или герой) — по нему наводится фокус.</summary>
         public Vector3 Focus => look;
+        /// <summary>Хайлайты способностей: «трансляция» держит в кадре и этого героя (null — только мяч).</summary>
+        public SimPlayer Follow;
+        /// <summary>Насколько сильно (0 — только мяч, 1 — только герой).</summary>
+        public float FollowMix;
 
         public void Seed(Vector3 p, Quaternion r) { pos = p; look = p + r * Vector3.forward * 10; init = true; shotT = 0; hasPrev = false; }
 
@@ -133,6 +137,11 @@ namespace Arena.Game
                 {
                     Vector3 f = ball + vel * s.broadcastLead * (1 - nearGoal); f.y = 0;
                     f = Vector3.Lerp(f, Vector3.Lerp(new Vector3(ball.x, 0, ball.z), gate, 0.4f), nearGoal); // мяч и ворота вместе
+                    if (Follow != null && FollowMix > 0)
+                    {   // момент способности: держим в кадре и героя
+                        Vector3 hp = W.Pos(Follow.X, Follow.Y); hp.y = 0;
+                        f = Vector3.Lerp(f, hp, FollowMix * (1 - nearGoal * 0.5f));
+                    }
                     f.x = Mathf.Clamp(f.x, -hl + 3, hl - 3);
                     f.z = Mathf.Clamp(f.z, -hw, hw);
                     tp = new Vector3(f.x, s.broadcastHeight, Mathf.Max(f.z - s.broadcastBack, -hw - 4.5f));
